@@ -4,7 +4,7 @@ import android.app.Service
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.Typeface
+import android.os.Build
 import android.os.IBinder
 import android.view.Gravity
 import android.view.MotionEvent
@@ -13,151 +13,158 @@ import android.view.WindowManager
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
-import android.graphics.drawable.GradientDrawable
-import kotlin.math.max
-import kotlin.math.min
-
-data class TargetPoint(var x: Float, var y: Float)
-
-object TargetStore {
-    val points: MutableList<TargetPoint> = mutableListOf(TargetPoint(300f, 600f))
-    @Volatile var currentMode: String = "single"
-    @Volatile var running: Boolean = false
-}
 
 class TargetOverlayService : Service() {
     private lateinit var wm: WindowManager
+    private var panel: View? = null
     private val targetViews = mutableListOf<View>()
-    private val panelViews = mutableListOf<View>()
-    private var panel: LinearLayout? = null
-    private var addButton: Button? = null
-    private var stopButton: Button? = null
+    private var dragStartX = 0f
+    private var dragStartY = 0f
+    private var startX = 0
+    private var startY = 0
 
-    private fun overlayParams(w: Int, h: Int, x: Int, y: Int) = WindowManager.LayoutParams(
-        w, h, WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-        PixelFormat.TRANSLUCENT
-    ).apply { gravity = Gravity.TOP or Gravity.START; this.x = x; this.y = y }
+    private fun overlayType() = if (Build.VERSION.SDK_INT >= 26)
+        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY else WindowManager.LayoutParams.TYPE_PHONE
 
     override fun onCreate() {
         super.onCreate()
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
+        TargetStore.ensureOne()
         showPanel()
         refreshTargets()
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (panel == null) showPanel()
+        refreshTargets()
+        return START_STICKY
+    }
+
+    private fun params(width: Int, height: Int, gravity: Int = Gravity.TOP or Gravity.START) =
+        WindowManager.LayoutParams(width, height, overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT).apply {
+            this.gravity = gravity
+            x = 20
+            y = 140
+        }
+
     private fun showPanel() {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            setPadding(8, 6, 8, 6)
-            background = GradientDrawable().apply {
-                setColor(Color.argb(235, 30, 30, 30)); cornerRadius = 24f
-            }
+        if (panel != null) return
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(8, 8, 8, 8)
+            setBackgroundColor(Color.rgb(35, 35, 35))
         }
         val drag = TextView(this).apply {
-            text = "↕"
-            textSize = 20f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            setPadding(8, 4, 8, 4)
-        }
-        val add = Button(this).apply {
-            text = "+"
+            text = "⠿  DRAG PANEL HERE"
             textSize = 18f
-            setOnClickListener {
-                if (TargetStore.points.size < 10) {
-                    TargetStore.points.add(TargetPoint(300f + TargetStore.points.size * 35f, 600f + TargetStore.points.size * 35f))
-                    refreshTargets()
-                }
-            }
-        }
-        val stop = Button(this).apply {
-            text = "STOP"
-            textSize = 14f
             setTextColor(Color.WHITE)
-            setBackgroundColor(Color.rgb(210, 25, 45))
-            setOnClickListener {
-                AutoClickAccessibilityService.instance?.stopRun()
-                TargetStore.running = false
-                text = "STOPPED"
-                postDelayed({ if (this@TargetOverlayService.stopButton === this) text = "STOP" }, 1000)
-            }
+            setPadding(20, 18, 20, 18)
+            setBackgroundColor(Color.DKGRAY)
         }
-        drag.setOnTouchListener(PanelDragListener(box))
-        box.addView(drag)
-        box.addView(add)
-        box.addView(stop)
-        panel = box; addButton = add; stopButton = stop
-        try {
-            wm.addView(box, overlayParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT, 30, 160))
-            panelViews.add(box)
-        } catch (_: Exception) {}
-    }
-
-    private inner class PanelDragListener(private val view: View) : View.OnTouchListener {
-        private var sx = 0f; private var sy = 0f; private var ox = 0; private var oy = 0
-        override fun onTouch(v: View, event: MotionEvent): Boolean {
-            val lp = view.layoutParams as? WindowManager.LayoutParams ?: return false
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> { sx = event.rawX; sy = event.rawY; ox = lp.x; oy = lp.y; return true }
-                MotionEvent.ACTION_MOVE -> {
-                    lp.x = ox + (event.rawX - sx).toInt(); lp.y = oy + (event.rawY - sy).toInt()
-                    try { wm.updateViewLayout(view, lp) } catch (_: Exception) {}
-                    return true
+        val row1 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        fun button(label: String, color: Int, action: () -> Unit): Button =
+            Button(this).apply {
+                text = label
+                setTextColor(Color.WHITE)
+                setBackgroundColor(color)
+                setOnClickListener { action() }
+            }
+        row1.addView(button("START", 0xff2e7d32.toInt()) {
+            val s = AutoClickAccessibilityService.instance
+            if (s != null) {
+                val cfg = AutoClickAccessibilityService.latestSettings.toMutableMap()
+                cfg["startedAtMs"] = System.currentTimeMillis()
+                s.startRun(cfg)
+            }
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        row1.addView(button("PAUSE", 0xffef6c00.toInt()) {
+            val s = AutoClickAccessibilityService.instance
+            if (s?.isPaused() == true) s.resumeRun() else s?.pauseRun()
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        row1.addView(button("STOP", 0xffc62828.toInt()) {
+            AutoClickAccessibilityService.instance?.stopRun()
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        row2.addView(button("+ POINT", 0xff1565c0.toInt()) {
+            TargetStore.addPoint(); refreshTargets()
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        row2.addView(button("− POINT", 0xff6a1b9a.toInt()) {
+            TargetStore.removeLast(); refreshTargets()
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        root.addView(drag)
+        root.addView(row1)
+        root.addView(row2)
+        val lp = params(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT)
+        drag.setOnTouchListener { _, e ->
+            when (e.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    dragStartX = e.rawX; dragStartY = e.rawY
+                    startX = lp.x; startY = lp.y; true
                 }
+                MotionEvent.ACTION_MOVE -> {
+                    lp.x = startX + (e.rawX - dragStartX).toInt()
+                    lp.y = startY + (e.rawY - dragStartY).toInt()
+                    try { wm.updateViewLayout(root, lp) } catch (_: Exception) {}
+                    true
+                }
+                else -> true
             }
-            return true
         }
+        wm.addView(root, lp)
+        panel = root
     }
 
-    private fun refreshTargets() {
-        targetViews.forEach { try { wm.removeView(it) } catch (_: Exception) {} }
+    fun refreshTargets() {
+        if (!::wm.isInitialized) return
+        targetViews.toList().forEach { try { wm.removeView(it) } catch (_: Exception) {} }
         targetViews.clear()
         TargetStore.points.forEachIndexed { index, point ->
             val v = TextView(this).apply {
                 text = "P${index + 1}"
-                textSize = 12f
-                typeface = Typeface.DEFAULT_BOLD
+                textSize = 13f
                 setTextColor(Color.WHITE)
+                setPadding(12, 10, 12, 10)
+                setBackgroundColor(0xff1976d2.toInt())
                 gravity = Gravity.CENTER
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(Color.argb(220, 20, 110, 240))
-                    setStroke(3, Color.WHITE)
-                }
-                setOnTouchListener(TargetDragListener(this, index))
+                elevation = 8f
             }
-            val size = 58
-            try {
-                wm.addView(v, overlayParams(size, size, point.x.toInt() - size / 2, point.y.toInt() - size / 2))
-                targetViews.add(v)
-            } catch (_: Exception) {}
-        }
-    }
-
-    private inner class TargetDragListener(private val view: View, private val index: Int) : View.OnTouchListener {
-        private var sx = 0f; private var sy = 0f; private var ox = 0; private var oy = 0
-        override fun onTouch(v: View, event: MotionEvent): Boolean {
-            val lp = view.layoutParams as? WindowManager.LayoutParams ?: return false
-            when (event.action) {
-                MotionEvent.ACTION_DOWN -> { sx = event.rawX; sy = event.rawY; ox = lp.x; oy = lp.y; return true }
-                MotionEvent.ACTION_MOVE -> {
-                    lp.x = max(0, ox + (event.rawX - sx).toInt())
-                    lp.y = max(0, oy + (event.rawY - sy).toInt())
-                    try { wm.updateViewLayout(view, lp) } catch (_: Exception) {}
-                    TargetStore.points.getOrNull(index)?.let { it.x = lp.x + view.width / 2f; it.y = lp.y + view.height / 2f }
-                    return true
+            val lp = params(WRAP_CONTENT, WRAP_CONTENT).apply {
+                x = point.x.toInt().coerceAtLeast(0)
+                y = point.y.toInt().coerceAtLeast(0)
+            }
+            v.setOnTouchListener { view, e ->
+                when (e.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        dragStartX = e.rawX; dragStartY = e.rawY
+                        startX = lp.x; startY = lp.y
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        lp.x = (startX + e.rawX - dragStartX).toInt().coerceAtLeast(0)
+                        lp.y = (startY + e.rawY - dragStartY).toInt().coerceAtLeast(0)
+                        try { wm.updateViewLayout(view, lp) } catch (_: Exception) {}
+                        true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        TargetStore.points[index] = TargetPoint(lp.x.toFloat() + view.width / 2f, lp.y.toFloat() + view.height / 2f)
+                        true
+                    }
+                    else -> true
                 }
             }
-            return true
+            try { wm.addView(v, lp); targetViews.add(v) } catch (_: Exception) {}
         }
     }
 
     override fun onDestroy() {
         targetViews.forEach { try { wm.removeView(it) } catch (_: Exception) {} }
-        panelViews.forEach { try { wm.removeView(it) } catch (_: Exception) {} }
-        targetViews.clear(); panelViews.clear()
+        targetViews.clear()
+        panel?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        panel = null
         super.onDestroy()
     }
+
     override fun onBind(intent: Intent?): IBinder? = null
 }

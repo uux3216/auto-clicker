@@ -12,12 +12,15 @@ class AutoClickAccessibilityService : AccessibilityService() {
         @Volatile var instance: AutoClickAccessibilityService? = null
         @Volatile var latestSettings: Map<*, *> = emptyMap<Any, Any>()
     }
+
     private val handler = Handler(Looper.getMainLooper())
     @Volatile private var running = false
-    @Volatile private var generation = 0
-    private var settings: Map<*, *> = emptyMap<Any, Any>()
-    private var completed = 0
+    @Volatile private var paused = false
+    private var completedCycles = 0
     private var pointIndex = 0
+    private var settings: Map<*, *> = emptyMap<Any, Any>()
+    private var gestureInFlight = false
+    private var runToken = 0
 
     override fun onServiceConnected() { instance = this }
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
@@ -28,57 +31,114 @@ class AutoClickAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
-    fun startRun(newSettings: Map<*, *>) {
+    @Synchronized fun startRun(newSettings: Map<*, *>) {
         stopRun()
         settings = newSettings
-        TargetStore.currentMode = settings["mode"] as? String ?: "single"
-        completed = 0; pointIndex = 0; running = true; TargetStore.running = true
-        val token = generation
-        handler.post { if (running && token == generation) runNext(token) }
+        latestSettings = newSettings
+        completedCycles = 0
+        pointIndex = 0
+        paused = false
+        running = true
+        runToken++
+        val token = runToken
+        handler.post { if (token == runToken) runNext(token) }
     }
 
-    fun stopRun() {
+    @Synchronized fun stopRun() {
         running = false
-        TargetStore.running = false
-        generation++
+        paused = false
+        runToken++
         handler.removeCallbacksAndMessages(null)
-        // Cancellation callback is best-effort; Android can finish an in-flight gesture asynchronously.
-        try { dispatchGesture(GestureDescription.Builder().build(), null, handler) } catch (_: Exception) {}
+        // Android does not expose a guaranteed force-release/cancel API for every dispatched gesture.
     }
 
-    private fun intValue(key: String, fallback: Int) = (settings[key] as? Number)?.toInt() ?: fallback
-    private fun boolValue(key: String, fallback: Boolean) = settings[key] as? Boolean ?: fallback
+    @Synchronized fun pauseRun() {
+        if (running) paused = true
+    }
+
+    @Synchronized fun resumeRun() {
+        if (running && paused) {
+            paused = false
+            handler.post { runNext(runToken) }
+        }
+    }
+
+    fun isRunning() = running
+    fun isPaused() = paused
+
+    private fun intValue(key: String, fallback: Int) =
+        (settings[key] as? Number)?.toInt() ?: fallback
+    private fun longValue(key: String, fallback: Long) =
+        (settings[key] as? Number)?.toLong() ?: fallback
+    private fun boolValue(key: String, fallback: Boolean) =
+        settings[key] as? Boolean ?: fallback
     private fun mode() = settings["mode"] as? String ?: "single"
 
     private fun runNext(token: Int) {
-        if (!running || token != generation) return
-        val infinite = boolValue("infinity", true)
-        val repeatLimit = if (mode() == "hold") 1 else intValue("repeatCount", 100).coerceAtLeast(1)
-        val points = TargetStore.points.toList()
-        val chosen = if (mode() == "multiple" && points.isNotEmpty()) points[pointIndex % points.size]
-            else points.firstOrNull() ?: TargetPoint(300f, 600f)
+        if (token != runToken || !running || paused || gestureInFlight) return
+        val infinity = boolValue("infinity", true)
+        val mode = mode()
+        val points = TargetStore.points.toList().ifEmpty {
+            val configured = settings["points"] as? List<*> ?: emptyList<Any>()
+            configured.mapNotNull {
+                val m = it as? Map<*, *> ?: return@mapNotNull null
+                TargetPoint((m["x"] as? Number)?.toFloat() ?: 540f,
+                    (m["y"] as? Number)?.toFloat() ?: 960f)
+            }
+        }
+        if (points.isEmpty()) {
+            stopRun()
+            return
+        }
 
-        val isHold = mode() == "hold"
-        val duration = if (isHold) intValue("holdMs", 3000).coerceAtLeast(1) else 70
-        val path = Path().apply { moveTo(chosen.x, chosen.y) }
-        val stroke = GestureDescription.StrokeDescription(path, 0, duration.toLong())
-        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        val point = if (mode == "multiple") points[pointIndex.coerceIn(0, points.lastIndex)]
+                    else points.first()
+        val hold = mode == "hold"
+        val duration = if (hold) intValue("holdMs", 3000).coerceIn(1, 60000) else 80
+        val path = Path().apply { moveTo(point.x, point.y) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, duration.toLong()))
+            .build()
+
+        gestureInFlight = true
         val accepted = dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
-                if (!running || token != generation) return
-                completed++
-                if (mode() == "multiple" && points.isNotEmpty()) pointIndex++
-                val isEndOfRound = mode() != "multiple" || points.isEmpty() || pointIndex % points.size == 0
-                val done = !infinite && isEndOfRound && completed >= repeatLimit * if (mode() == "multiple") points.size else 1
-                if (done) { stopRun(); return }
-                val pause = if (isHold) intValue("holdBreakMs", 500) else intValue("breakMs", 100)
-                handler.postDelayed({ if (running && token == generation) runNext(token) }, pause.coerceAtLeast(0).toLong())
+                gestureInFlight = false
+                if (token != runToken || !running) return
+                if (paused) return
+                if (mode == "multiple") {
+                    pointIndex++
+                    if (pointIndex >= points.size) {
+                        pointIndex = 0
+                        completedCycles++
+                    }
+                } else {
+                    completedCycles++
+                }
+
+                val repeatSeconds = longValue("repeatSeconds", 100L).coerceIn(1L, 86400L)
+                val startedAt = (settings["startedAtMs"] as? Number)?.toLong()
+                val elapsedMs = if (startedAt == null) 0L else System.currentTimeMillis() - startedAt
+                val finishedByTime = !infinity && startedAt != null && elapsedMs >= repeatSeconds * 1000L
+                val breakMs = if (hold) intValue("holdBreakMs", 500) else intValue("breakMs", 100)
+                if (finishedByTime) {
+                    running = false
+                    return
+                }
+                handler.postDelayed({ runNext(token) }, breakMs.coerceIn(0, 60000).toLong())
             }
+
             override fun onCancelled(gestureDescription: GestureDescription?) {
-                // If Stop has been pressed, do not restart. Otherwise retry conservatively.
-                if (running && token == generation) handler.postDelayed({ runNext(token) }, 150)
+                gestureInFlight = false
+                if (token != runToken || !running || paused) return
+                handler.postDelayed({ runNext(token) }, 250)
             }
         }, handler)
-        if (!accepted && running && token == generation) handler.postDelayed({ runNext(token) }, 250)
+        if (!accepted) {
+            gestureInFlight = false
+            if (running && !paused && token == runToken) {
+                handler.postDelayed({ runNext(token) }, 300)
+            }
+        }
     }
 }
