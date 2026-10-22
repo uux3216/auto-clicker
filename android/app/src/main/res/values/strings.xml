@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Auto Clicker</string>
+    <string name="accessibility_service_description">Performs tap and hold gestures configured by the user.</string>
+</resources>
