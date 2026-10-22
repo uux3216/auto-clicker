@@ -130,7 +130,7 @@ class TargetOverlayService : Service() {
                 gravity = Gravity.CENTER
                 elevation = 8f
             }
-            val lp = params(WRAP_CONTENT, WRAP_CONTENT).apply {
+            val lp = params(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT).apply {
                 x = point.x.toInt().coerceAtLeast(0)
                 y = point.y.toInt().coerceAtLeast(0)
             }
