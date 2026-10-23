@@ -1,9 +1,7 @@
 package com.example.auto_clicker
 
-data class TargetPoint(val x: Float, val y: Float)
-
 object TargetStore {
-    @Volatile var enabled = false
-    @Volatile var targetX = 540f
-    @Volatile var targetY = 960f
+    @Volatile var holdSeconds: Long = 3
+    @Volatile var breakSeconds: Long = 1
+    @Volatile var running: Boolean = false
 }

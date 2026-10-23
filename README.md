@@ -1,24 +1,14 @@
-# Simple Hold Auto Clicker
+# Hold Clicker
 
-A minimal Flutter + Android AccessibilityService app with only:
-- Hold Time (seconds)
-- Break Time (seconds)
-- Floating overlay with icon-only Start and Stop controls
+A minimal Android hold automation app with:
+- Hold Time in seconds
+- Break Time in seconds
+- Enable Floating
+- Two movable icon-only floating controls: Start and Stop
+- An in-app button to open Android Accessibility Service settings
 
 ## Build
-```bash
-flutter pub get
-flutter build apk --release
-```
+Push to `main` and download the APK from the GitHub Actions artifact.
 
-## Use
-1. Install the APK.
-2. Open the app and grant “Display over other apps” permission when prompted.
-3. Enable Auto Clicker in Android Accessibility settings.
-4. Set Hold Time and Break Time in seconds.
-5. Enable Floating and drag the floating controls to a convenient position.
-6. Tap Start to repeat the hold gesture; tap Stop to stop scheduling further gestures.
-
-## Notes
-- The default target is screen coordinate (540, 960). This is a fixed coordinate and may need adjustment for different screen sizes. This starter does not provide a separate target picker.
-- Android may not guarantee cancellation of a gesture already dispatched when Stop is pressed.
+## Important
+Grant overlay permission and enable the Hold Clicker Accessibility Service in Android settings. Android may not immediately cancel a gesture that is already in progress. Test on a safe, non-sensitive screen first.

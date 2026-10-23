@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Hold Clicker</string>
+    <string name="accessibility_service_description">Allows Hold Clicker to perform user-requested touch gestures.</string>
+</resources>
