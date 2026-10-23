@@ -3,6 +3,8 @@ package com.example.auto_clicker
 import android.app.Service
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
@@ -10,9 +12,9 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 
 class TargetOverlayService : Service() {
     private lateinit var wm: WindowManager
@@ -70,8 +72,16 @@ class TargetOverlayService : Service() {
         // Keep the three controls together in one row; dragging any icon moves the whole row.
         for (i in 0 until bar.childCount) {
             attachDragAndClick(bar.getChildAt(i), lp, when (i) {
-                0 -> ({ AutoClickAccessibilityService.instance?.startHoldLoop(TargetStore.holdSeconds, TargetStore.breakSeconds) })
-                1 -> ({ AutoClickAccessibilityService.instance?.stopHoldLoop() })
+                0 -> ({
+                    val service = AutoClickAccessibilityService.instance
+                    if (service != null) service.startHoldLoop(TargetStore.holdSeconds, TargetStore.breakSeconds)
+                    else Toast.makeText(this, "আগে Accessibility Service চালু করুন", Toast.LENGTH_LONG).show()
+                })
+                1 -> ({
+                    val service = AutoClickAccessibilityService.instance
+                    if (service != null) service.stopHoldLoop()
+                    else Toast.makeText(this, "Accessibility Service চালু নেই", Toast.LENGTH_SHORT).show()
+                })
                 else -> ({ AutoClickAccessibilityService.instance?.stopHoldLoop(); stopSelf() })
             }, bar)
         }
@@ -83,14 +93,14 @@ class TargetOverlayService : Service() {
     ) {
         val button = TextView(this).apply {
             text = symbol
-            textSize = 19f
+            textSize = 24f
             setTextColor(tint)
             gravity = Gravity.CENTER
             setBackgroundColor(Color.TRANSPARENT)
             contentDescription = description
             setPadding(dp(3), dp(3), dp(3), dp(3))
         }
-        val params = LinearLayout.LayoutParams(dp(30), dp(30)).apply {
+        val params = LinearLayout.LayoutParams(dp(40), dp(40)).apply {
             marginStart = dp(5)
             marginEnd = dp(5)
         }
@@ -98,20 +108,24 @@ class TargetOverlayService : Service() {
     }
 
     private fun showTargetPoint() {
-        val marker = TextView(this).apply {
-            text = "P1"
-            textSize = 14f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-            setPadding(dp(10), dp(8), dp(10), dp(8))
-            setBackgroundColor(0xff1565c0.toInt())
-            elevation = dp(10).toFloat()
-            contentDescription = "Drag to set touch position"
-        }
-        // Layout position is marker's top-left; stored point is its center.
-        val initialX = (TargetStore.targetX - dp(28)).toInt().coerceAtLeast(0)
-        val initialY = (TargetStore.targetY - dp(20)).toInt().coerceAtLeast(0)
-        val lp = makeParams(dp(56), dp(40), initialX, initialY)
+        val markerSize = dp(44)
+        val marker = object : View(this) {
+            private val ring = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xff1565c0.toInt(); style = Paint.Style.STROKE; strokeWidth = dp(2).toFloat()
+            }
+            private val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = 0xff1565c0.toInt(); style = Paint.Style.FILL
+            }
+            override fun onDraw(canvas: Canvas) {
+                super.onDraw(canvas)
+                val c = width / 2f
+                canvas.drawCircle(c, height / 2f, c - dp(3), ring)
+                canvas.drawCircle(c, height / 2f, dp(3).toFloat(), dot)
+            }
+        }.apply { contentDescription = "Drag to set touch position" }
+        val initialX = (TargetStore.targetX - markerSize / 2f).toInt().coerceAtLeast(0)
+        val initialY = (TargetStore.targetY - markerSize / 2f).toInt().coerceAtLeast(0)
+        val lp = makeParams(markerSize, markerSize, initialX, initialY)
         marker.setOnTouchListener(object : View.OnTouchListener {
             var downX = 0f
             var downY = 0f
@@ -128,8 +142,8 @@ class TargetOverlayService : Service() {
                         lp.x = (startX + e.rawX - downX).toInt().coerceAtLeast(0)
                         lp.y = (startY + e.rawY - downY).toInt().coerceAtLeast(0)
                         try { wm.updateViewLayout(marker, lp) } catch (_: Exception) {}
-                        TargetStore.targetX = lp.x + dp(28).toFloat()
-                        TargetStore.targetY = lp.y + dp(20).toFloat()
+                        TargetStore.targetX = lp.x + marker.width / 2f
+                        TargetStore.targetY = lp.y + marker.height / 2f
                         return true
                     }
                     MotionEvent.ACTION_UP -> {
@@ -139,6 +153,12 @@ class TargetOverlayService : Service() {
                     }
                 }
                 return true
+            }
+        })
+        marker.viewTreeObserver.addOnGlobalLayoutListener(object : android.view.ViewTreeObserver.OnGlobalLayoutListener {
+            override fun onGlobalLayout() {
+                marker.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                marker.invalidate()
             }
         })
         addOverlay(marker, lp)
