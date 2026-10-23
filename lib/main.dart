@@ -1,135 +1,159 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-void main() => runApp(const AutoClickerApp());
-const native = MethodChannel('com.example.autoclicker/control');
+void main() => runApp(const HoldApp());
 
-class AutoClickerApp extends StatelessWidget {
-  const AutoClickerApp({super.key});
+const _channel = MethodChannel('com.example.autoclicker/control');
+
+class HoldApp extends StatelessWidget {
+  const HoldApp({super.key});
+
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    title: 'Auto Clicker', debugShowCheckedModeBanner: false,
-    theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF6750A4)), useMaterial3: true),
-    home: const HomePage());
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'Simple Hold',
+      theme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff16a34a)),
+        useMaterial3: true,
+      ),
+      home: const HoldHome(),
+    );
+  }
 }
-enum Mode { single, multiple, hold }
-class TargetPoint { double x, y; TargetPoint(this.x, this.y); }
 
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
-  @override State<HomePage> createState() => _HomePageState();
+class HoldHome extends StatefulWidget {
+  const HoldHome({super.key});
+
+  @override
+  State<HoldHome> createState() => _HoldHomeState();
 }
-class _HomePageState extends State<HomePage> {
-  Mode mode = Mode.single;
-  final breakController = TextEditingController(text: '100');
-  final repeatController = TextEditingController(text: '100');
-  final holdController = TextEditingController(text: '3000');
-  final holdBreakController = TextEditingController(text: '500');
-  bool infinity = true, running = false, overlayEnabled = false, paused = false;
-  final points = <TargetPoint>[TargetPoint(540, 960)];
 
-  @override void dispose() {
-    breakController.dispose(); repeatController.dispose(); holdController.dispose(); holdBreakController.dispose(); super.dispose();
-  }
-  int number(TextEditingController c, int fallback) => int.tryParse(c.text.trim())?.clamp(0, 86400000) ?? fallback;
-  Future<void> enableOverlay() async {
+class _HoldHomeState extends State<HoldHome> {
+  final _holdController = TextEditingController(text: '2');
+  final _breakController = TextEditingController(text: '1');
+  bool _floatingEnabled = false;
+  String _status = 'Ready';
+
+  Future<void> _enableFloating(bool enabled) async {
     try {
-      final ok = await native.invokeMethod<bool>('enableOverlay') ?? false;
-      if (mounted) setState(() => overlayEnabled = ok);
-      if (!ok && mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('অনুমতি চালু করে অ্যাপে ফিরে Enable আবার চাপুন।')));
-    } on PlatformException catch (e) { if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message ?? 'Overlay চালু হয়নি'))); }
-  }
-  Future<void> addPoint() async {
-    if (points.length >= 20) return;
-    setState(() => points.add(TargetPoint(540 + points.length * 35, 960 + points.length * 35)));
-    try { await native.invokeMethod('addPoint'); } catch (_) {}
-  }
-  Future<void> removePoint() async {
-    if (points.length <= 1) return;
-    setState(() => points.removeLast());
-    try { await native.invokeMethod('removePoint'); } catch (_) {}
-  }
-  Future<void> start() async {
-    final settings = <String, Object>{
-      'mode': mode.name, 'breakMs': number(breakController, 100),
-      'repeatSeconds': number(repeatController, 100), 'infinity': infinity,
-      'holdMs': number(holdController, 3000), 'holdBreakMs': number(holdBreakController, 500),
-      'points': points.map((p) => {'x': p.x, 'y': p.y}).toList(),
-      'startedAtMs': DateTime.now().millisecondsSinceEpoch,
-    };
-    try {
-      await native.invokeMethod('start', settings);
-      if (mounted) setState(() { running = true; paused = false; });
+      final result = await _channel.invokeMethod<bool>(
+        enabled ? 'enableOverlay' : 'disableOverlay',
+      );
+      if (!mounted) return;
+      if (enabled && result != true) {
+        setState(() => _status = 'Allow “Display over other apps”, then try again.');
+      } else {
+        setState(() {
+          _floatingEnabled = enabled;
+          _status = enabled ? 'Floating controls enabled' : 'Floating controls disabled';
+        });
+      }
     } on PlatformException catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message ?? 'Start হয়নি')));
-    } on MissingPluginException {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Native Android bridge পাওয়া যায়নি।')));
+      if (mounted) setState(() => _status = e.message ?? 'Could not change floating controls');
     }
   }
-  Future<void> stop() async {
-    try { await native.invokeMethod('stop'); } catch (_) {}
-    if (mounted) setState(() { running = false; paused = false; });
-  }
-  Future<void> togglePause() async {
+
+  Future<void> _start() async {
+    final hold = double.tryParse(_holdController.text.trim());
+    final rest = double.tryParse(_breakController.text.trim());
+    if (hold == null || rest == null || hold <= 0 || rest < 0 || hold > 60 || rest > 3600) {
+      setState(() => _status = 'Hold: 0–60 sec; Break: 0–3600 sec (Hold must be > 0).');
+      return;
+    }
     try {
-      if (paused) { await native.invokeMethod('resume'); } else { await native.invokeMethod('pause'); }
-      if (mounted) setState(() => paused = !paused);
-    } catch (_) {}
+      await _channel.invokeMethod('start', {
+        'mode': 'hold',
+        'holdSeconds': hold,
+        'holdBreakSeconds': rest,
+        'infinity': true,
+        'points': [{'x': 540.0, 'y': 960.0}],
+      });
+      if (mounted) setState(() => _status = 'Hold running');
+    } on PlatformException catch (e) {
+      if (mounted) {
+        setState(() => _status = e.message ?? 'Enable Accessibility Service, then press Start.');
+      }
+    }
   }
-  Widget field(String label, TextEditingController controller, {String suffix = 'ms'}) => TextField(
-    controller: controller, keyboardType: TextInputType.number,
-    decoration: InputDecoration(labelText: label, suffixText: suffix, border: const OutlineInputBorder()));
-  @override Widget build(BuildContext context) {
-    final isHold = mode == Mode.hold;
+
+  Future<void> _stop() async {
+    try {
+      await _channel.invokeMethod('stop');
+      if (mounted) setState(() => _status = 'Stopped');
+    } on PlatformException catch (e) {
+      if (mounted) setState(() => _status = e.message ?? 'Stop failed');
+    }
+  }
+
+  @override
+  void dispose() {
+    _holdController.dispose();
+    _breakController.dispose();
+    super.dispose();
+  }
+
+  Widget _timeField(String label, TextEditingController controller, String hint) {
+    return TextField(
+      controller: controller,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      inputFormatters: [
+        FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}')),
+      ],
+      decoration: InputDecoration(
+        labelText: label,
+        suffixText: 'seconds',
+        hintText: hint,
+        border: const OutlineInputBorder(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Auto Clicker'), centerTitle: true),
-      body: ListView(padding: const EdgeInsets.all(16), children: [
-        const Text('Mode', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-        const SizedBox(height: 10),
-        SegmentedButton<Mode>(segments: const [
-          ButtonSegment(value: Mode.single, label: Text('Single Click'), icon: Icon(Icons.touch_app)),
-          ButtonSegment(value: Mode.multiple, label: Text('Multiple'), icon: Icon(Icons.grid_view)),
-          ButtonSegment(value: Mode.hold, label: Text('Hold'), icon: Icon(Icons.pan_tool_alt)),
-        ], selected: {mode}, onSelectionChanged: (s) => setState(() => mode = s.first)),
-        const SizedBox(height: 16),
-        SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('Enable floating controls'),
-          subtitle: const Text('অন্য অ্যাপের ওপর ভাসমান প্যানেল ও টার্গেট পয়েন্ট দেখাবে'),
-          value: overlayEnabled, onChanged: (_) => enableOverlay()),
-        if (mode == Mode.multiple) ...[
-          Row(children: [
-            const Expanded(child: Text('Target points', style: TextStyle(fontWeight: FontWeight.bold))),
-            IconButton(onPressed: removePoint, icon: const Icon(Icons.remove_circle_outline), tooltip: 'শেষ পয়েন্ট রিমুভ'),
-            IconButton(onPressed: addPoint, icon: const Icon(Icons.add_circle_outline), tooltip: 'পয়েন্ট যোগ'),
-          ]),
-          for (int i = 0; i < points.length; i++)
-            ListTile(leading: CircleAvatar(child: Text('P${i+1}')),
-              title: Text('X ${points[i].x.round()} · Y ${points[i].y.round()}'),
-              trailing: IconButton(onPressed: points.length <= 1 ? null : () {
-                setState(() => points.removeAt(i));
-                native.invokeMethod('removePoint');
-              }, icon: const Icon(Icons.delete_outline))),
-        ],
-        if (!isHold) ...[
-          field('Break Time', breakController),
+      appBar: AppBar(title: const Text('Simple Hold Auto Clicker')),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          const Icon(Icons.touch_app, size: 64, color: Color(0xff16a34a)),
+          const SizedBox(height: 20),
+          _timeField('Hold Time', _holdController, 'e.g. 2'),
+          const SizedBox(height: 16),
+          _timeField('Break Time', _breakController, 'e.g. 1'),
+          const SizedBox(height: 16),
+          Card(
+            child: SwitchListTile(
+              value: _floatingEnabled,
+              onChanged: _enableFloating,
+              title: const Text('Enable Floating'),
+              subtitle: const Text('Only Start ▶ and Stop ■ icons'),
+            ),
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            onPressed: _start,
+            icon: const Icon(Icons.play_arrow),
+            label: const Text('Start'),
+          ),
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed: _stop,
+            icon: const Icon(Icons.stop),
+            label: const Text('Stop'),
+          ),
+          const SizedBox(height: 20),
+          Text(_status, textAlign: TextAlign.center),
           const SizedBox(height: 12),
-          field('Repeat Time', repeatController, suffix: 'sec'),
-        ] else ...[
-          field('Hold Time', holdController),
-          const SizedBox(height: 12),
-          field('Hold Break Time', holdBreakController),
+          const Text(
+            'Before using, enable Auto Clicker in Android Accessibility settings. '
+            'Choose the target point by positioning the floating controls over the desired screen area; '
+            'Android may restrict cancelling an already-dispatched gesture.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey, fontSize: 12),
+          ),
         ],
-        SwitchListTile(contentPadding: EdgeInsets.zero, title: const Text('Infinity'),
-          subtitle: const Text('Stop চাপা পর্যন্ত চালু থাকবে'), value: infinity,
-          onChanged: (v) => setState(() => infinity = v)),
-        FilledButton.icon(onPressed: start, icon: const Icon(Icons.play_arrow), label: const Text('Start')),
-        const SizedBox(height: 8),
-        OutlinedButton.icon(onPressed: togglePause, icon: Icon(paused ? Icons.play_arrow : Icons.pause), label: Text(paused ? 'Resume' : 'Pause')),
-        const SizedBox(height: 8),
-        OutlinedButton.icon(onPressed: stop, icon: const Icon(Icons.stop), label: const Text('Stop')),
-        const SizedBox(height: 12),
-        const Text('Safety: Android may not immediately cancel a gesture already in progress. First test on a non-sensitive screen.',
-          style: TextStyle(fontSize: 12, color: Colors.black54)),
-      ]),
+      ),
     );
   }
 }

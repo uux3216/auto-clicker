@@ -13,66 +13,52 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).setMethodCallHandler { call, result ->
-            when (call.method) {
-                "enableOverlay" -> {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-                        startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
-                        result.success(false)
-                    } else {
-                        TargetStore.enabled = true
-                        startService(Intent(this, TargetOverlayService::class.java))
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "enableOverlay" -> {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+                            !Settings.canDrawOverlays(this)) {
+                            startActivity(
+                                Intent(
+                                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                    Uri.parse("package:$packageName")
+                                )
+                            )
+                            result.success(false)
+                        } else {
+                            TargetStore.enabled = true
+                            startService(Intent(this, TargetOverlayService::class.java))
+                            result.success(true)
+                        }
+                    }
+                    "disableOverlay" -> {
+                        TargetStore.enabled = false
+                        stopService(Intent(this, TargetOverlayService::class.java))
                         result.success(true)
                     }
-                }
-                "start" -> {
-                    val settings = call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()
-                    AutoClickAccessibilityService.latestSettings = settings
-                    TargetStore.points.clear()
-                    val supplied = settings["points"] as? List<*> ?: emptyList<Any>()
-                    supplied.forEach {
-                        val m = it as? Map<*, *> ?: return@forEach
-                        TargetStore.points.add(TargetPoint(
-                            (m["x"] as? Number)?.toFloat() ?: 540f,
-                            (m["y"] as? Number)?.toFloat() ?: 960f))
+                    "start" -> {
+                        val settings = call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()
+                        AutoClickAccessibilityService.latestSettings = settings
+                        val service = AutoClickAccessibilityService.instance
+                        if (service == null) {
+                            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                            result.error(
+                                "ACCESSIBILITY_DISABLED",
+                                "Enable Auto Clicker in Accessibility settings, return to the app, then press Start.",
+                                null
+                            )
+                        } else {
+                            service.startRun(settings)
+                            result.success(true)
+                        }
                     }
-                    TargetStore.ensureOne()
-                    val service = AutoClickAccessibilityService.instance
-                    if (service == null) {
-                        startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-                        result.error("ACCESSIBILITY_DISABLED", "Enable Auto Clicker Accessibility Service, return to the app and press Start again.", null)
-                    } else {
-                        service.startRun(settings)
+                    "stop" -> {
+                        AutoClickAccessibilityService.instance?.stopRun()
                         result.success(true)
                     }
+                    else -> result.notImplemented()
                 }
-                "stop" -> {
-                    AutoClickAccessibilityService.instance?.stopRun()
-                    result.success(true)
-                }
-                "pause" -> {
-                    AutoClickAccessibilityService.instance?.pauseRun()
-                    result.success(true)
-                }
-                "resume" -> {
-                    AutoClickAccessibilityService.instance?.resumeRun()
-                    result.success(true)
-                }
-                "addPoint" -> {
-                    TargetStore.addPoint()
-                    result.success(TargetStore.points.size)
-                }
-                "removePoint" -> {
-                    TargetStore.removeLast()
-                    result.success(TargetStore.points.size)
-                }
-                "disableOverlay" -> {
-                    stopService(Intent(this, TargetOverlayService::class.java))
-                    TargetStore.enabled = false
-                    result.success(true)
-                }
-                else -> result.notImplemented()
             }
-        }
     }
 }
