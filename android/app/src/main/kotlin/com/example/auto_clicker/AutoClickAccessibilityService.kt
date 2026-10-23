@@ -53,7 +53,7 @@ class AutoClickAccessibilityService : AccessibilityService() {
         // Use the user-positioned P1 marker, clamped inside the current display.
         val x = TargetStore.targetX.coerceIn(1f, (display.widthPixels - 1).toFloat())
         val y = TargetStore.targetY.coerceIn(1f, (display.heightPixels - 1).toFloat())
-        val path = Path().apply { moveTo(x, y); lineTo(x + 0.1f, y + 0.1f) }
+        val path = Path().apply { moveTo(x, y) }
         val durationMs = (TargetStore.holdSeconds * 1000L).coerceIn(1L, 60000L)
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0L, durationMs))
