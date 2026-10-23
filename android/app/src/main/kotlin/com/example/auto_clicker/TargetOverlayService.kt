@@ -12,20 +12,21 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.ImageButton
 import android.widget.LinearLayout
+import android.widget.TextView
 
 class TargetOverlayService : Service() {
     private lateinit var wm: WindowManager
     private val overlays = mutableListOf<View>()
-    private var startButton: ImageButton? = null
-    private var stopButton: ImageButton? = null
 
     private fun overlayType() =
         if (Build.VERSION.SDK_INT >= 26) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
         else WindowManager.LayoutParams.TYPE_PHONE
 
-    private fun makeParams(x: Int, y: Int): WindowManager.LayoutParams =
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun makeParams(width: Int, height: Int, x: Int, y: Int) =
         WindowManager.LayoutParams(
-            dp(56), dp(56), overlayType(),
+            width, height, overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
@@ -35,94 +36,166 @@ class TargetOverlayService : Service() {
             this.y = y
         }
 
-    private fun dp(value: Int): Int =
-        (value * resources.displayMetrics.density).toInt()
-
     override fun onCreate() {
         super.onCreate()
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
-        showFloatingIcons()
+        showFloatingControls()
+        showTargetPoint()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (overlays.isEmpty()) showFloatingIcons()
+        if (overlays.isEmpty()) {
+            showFloatingControls()
+            showTargetPoint()
+        }
         return START_STICKY
     }
 
-    private fun showFloatingIcons() {
-        if (overlays.isNotEmpty()) return
-        startButton = makeIcon(android.R.drawable.ic_media_play, 0xff16803c.toInt(), 24, 180) {
-            val service = AutoClickAccessibilityService.instance
-            if (service != null) {
-                service.startHoldLoop(TargetStore.holdSeconds, TargetStore.breakSeconds)
-            } else {
-                // Accessibility must be enabled by the user in Android settings first.
+    private fun showFloatingControls() {
+        val bar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            alpha = 0.78f
+            background = android.graphics.drawable.GradientDrawable().apply {
+                setColor(0x33000000)
+                cornerRadius = dp(12).toFloat()
             }
+            contentDescription = "Floating controls; drag any icon to move the row"
         }
-        stopButton = makeIcon(android.R.drawable.ic_media_pause, 0xffc62828.toInt(), 24, 250) {
-            AutoClickAccessibilityService.instance?.stopHoldLoop()
+        val lp = makeParams(WindowManager.LayoutParams.WRAP_CONTENT, dp(42), dp(12), dp(120))
+        addIconToBar(bar, "▶", 0xff36b86a.toInt(), "Start")
+        addIconToBar(bar, "■", 0xffffb74d.toInt(), "Stop")
+        addIconToBar(bar, "×", 0xffef5350.toInt(), "Close floating controls")
+        // Keep the three controls together in one row; dragging any icon moves the whole row.
+        for (i in 0 until bar.childCount) {
+            attachDragAndClick(bar.getChildAt(i), lp, when (i) {
+                0 -> ({ AutoClickAccessibilityService.instance?.startHoldLoop(TargetStore.holdSeconds, TargetStore.breakSeconds) })
+                1 -> ({ AutoClickAccessibilityService.instance?.stopHoldLoop() })
+                else -> ({ AutoClickAccessibilityService.instance?.stopHoldLoop(); stopSelf() })
+            }, bar)
         }
+        addOverlay(bar, lp)
     }
 
-    private fun makeIcon(iconRes: Int, color: Int, x: Int, y: Int, action: () -> Unit): ImageButton {
-        val button = ImageButton(this).apply {
-            setImageResource(iconRes)
-            setColorFilter(Color.WHITE)
-            setBackgroundColor(color)
-            contentDescription = if (color == 0xff16803c.toInt()) "Start hold automation" else "Stop hold automation"
-            elevation = dp(8).toFloat()
-            setOnClickListener { action() }
+    private fun addIconToBar(
+        bar: LinearLayout, symbol: String, tint: Int, description: String
+    ) {
+        val button = TextView(this).apply {
+            text = symbol
+            textSize = 19f
+            setTextColor(tint)
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.TRANSPARENT)
+            contentDescription = description
+            setPadding(dp(3), dp(3), dp(3), dp(3))
         }
-        val lp = makeParams(x, y)
-        button.setOnTouchListener(object : View.OnTouchListener {
-            var downRawX = 0f
-            var downRawY = 0f
-            var initialX = 0
-            var initialY = 0
-            var moved = false
-            override fun onTouch(v: View, event: MotionEvent): Boolean {
-                when (event.action) {
+        val params = LinearLayout.LayoutParams(dp(30), dp(30)).apply {
+            marginStart = dp(5)
+            marginEnd = dp(5)
+        }
+        bar.addView(button, params)
+    }
+
+    private fun showTargetPoint() {
+        val marker = TextView(this).apply {
+            text = "P1"
+            textSize = 14f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            setBackgroundColor(0xff1565c0.toInt())
+            elevation = dp(10).toFloat()
+            contentDescription = "Drag to set touch position"
+        }
+        // Layout position is marker's top-left; stored point is its center.
+        val initialX = (TargetStore.targetX - dp(28)).toInt().coerceAtLeast(0)
+        val initialY = (TargetStore.targetY - dp(20)).toInt().coerceAtLeast(0)
+        val lp = makeParams(dp(56), dp(40), initialX, initialY)
+        marker.setOnTouchListener(object : View.OnTouchListener {
+            var downX = 0f
+            var downY = 0f
+            var startX = 0
+            var startY = 0
+            override fun onTouch(v: View, e: MotionEvent): Boolean {
+                when (e.action) {
                     MotionEvent.ACTION_DOWN -> {
-                        downRawX = event.rawX
-                        downRawY = event.rawY
-                        initialX = lp.x
-                        initialY = lp.y
+                        downX = e.rawX; downY = e.rawY
+                        startX = lp.x; startY = lp.y
+                        return true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        lp.x = (startX + e.rawX - downX).toInt().coerceAtLeast(0)
+                        lp.y = (startY + e.rawY - downY).toInt().coerceAtLeast(0)
+                        try { wm.updateViewLayout(marker, lp) } catch (_: Exception) {}
+                        TargetStore.targetX = lp.x + dp(28).toFloat()
+                        TargetStore.targetY = lp.y + dp(20).toFloat()
+                        return true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        TargetStore.targetX = lp.x + marker.width / 2f
+                        TargetStore.targetY = lp.y + marker.height / 2f
+                        return true
+                    }
+                }
+                return true
+            }
+        })
+        addOverlay(marker, lp)
+    }
+
+    private fun attachDragAndClick(
+        view: View,
+        lp: WindowManager.LayoutParams,
+        action: () -> Unit,
+        movingView: View = view
+    ) {
+        view.setOnTouchListener(object : View.OnTouchListener {
+            var downX = 0f
+            var downY = 0f
+            var startX = 0
+            var startY = 0
+            var moved = false
+            override fun onTouch(v: View, e: MotionEvent): Boolean {
+                when (e.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downX = e.rawX; downY = e.rawY
+                        startX = lp.x; startY = lp.y
                         moved = false
                         return true
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        val dx = (event.rawX - downRawX).toInt()
-                        val dy = (event.rawY - downRawY).toInt()
+                        val dx = (e.rawX - downX).toInt()
+                        val dy = (e.rawY - downY).toInt()
                         if (kotlin.math.abs(dx) > dp(6) || kotlin.math.abs(dy) > dp(6)) moved = true
                         if (moved) {
-                            lp.x = (initialX + dx).coerceAtLeast(0)
-                            lp.y = (initialY + dy).coerceAtLeast(0)
-                            try { wm.updateViewLayout(button, lp) } catch (_: Exception) {}
-                            return true
+                            lp.x = (startX + dx).coerceAtLeast(0)
+                            lp.y = (startY + dy).toInt().coerceAtLeast(0)
+                            try { wm.updateViewLayout(movingView, lp) } catch (_: Exception) {}
                         }
-                        return false
+                        return true
                     }
                     MotionEvent.ACTION_UP -> {
                         if (!moved) action()
                         return true
                     }
                 }
-                return false
+                return true
             }
         })
+    }
+
+    private fun addOverlay(view: View, lp: WindowManager.LayoutParams) {
         try {
-            wm.addView(button, lp)
-            overlays.add(button)
+            wm.addView(view, lp)
+            overlays.add(view)
         } catch (_: Exception) {}
-        return button
     }
 
     override fun onDestroy() {
         AutoClickAccessibilityService.instance?.stopHoldLoop()
         overlays.toList().forEach { try { wm.removeView(it) } catch (_: Exception) {} }
         overlays.clear()
-        startButton = null
-        stopButton = null
         super.onDestroy()
     }
 

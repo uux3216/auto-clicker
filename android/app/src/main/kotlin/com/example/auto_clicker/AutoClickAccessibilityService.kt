@@ -50,8 +50,9 @@ class AutoClickAccessibilityService : AccessibilityService() {
         if (token != runToken || !running || gestureInFlight) return
 
         val display = resources.displayMetrics
-        val x = display.widthPixels / 2f
-        val y = display.heightPixels / 2f
+        // Use the user-positioned P1 marker, clamped inside the current display.
+        val x = TargetStore.targetX.coerceIn(1f, (display.widthPixels - 1).toFloat())
+        val y = TargetStore.targetY.coerceIn(1f, (display.heightPixels - 1).toFloat())
         val path = Path().apply { moveTo(x, y) }
         val durationMs = (TargetStore.holdSeconds * 1000L).coerceIn(1L, 60000L)
         val gesture = GestureDescription.Builder()

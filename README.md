@@ -1,14 +1,10 @@
-# Hold Clicker
+# Hold Clicker with draggable target
 
-A minimal Android hold automation app with:
 - Hold Time in seconds
 - Break Time in seconds
 - Enable Floating
-- Two movable icon-only floating controls: Start and Stop
-- An in-app button to open Android Accessibility Service settings
+- Two movable icon-only Start/Stop controls
+- Draggable P1 marker: move it to the exact screen position to hold-touch
+- Accessibility Service settings button
 
-## Build
-Push to `main` and download the APK from the GitHub Actions artifact.
-
-## Important
-Grant overlay permission and enable the Hold Clicker Accessibility Service in Android settings. Android may not immediately cancel a gesture that is already in progress. Test on a safe, non-sensitive screen first.
+The target is the center of the P1 marker. Android may not immediately cancel a gesture already in progress. Test on a safe screen.
