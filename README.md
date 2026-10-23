@@ -15,3 +15,5 @@ Grant overlay permission and enable the Hold Clicker Accessibility Service in An
 
 
 See `DEBUGGING.md` for Logcat instructions and diagnostic event meanings.
+
+End.
