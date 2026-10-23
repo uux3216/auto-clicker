@@ -91,7 +91,10 @@ class AutoClickAccessibilityService : AccessibilityService() {
         Log.i(TAG, "GESTURE_PREPARE: x=$x y=$y display=${display.widthPixels}x${display.heightPixels} density=${display.density} durationMs=$durationMs")
         TargetStore.report("GESTURE_PREPARE", "Sending hold at X=${x.toInt()}, Y=${y.toInt()} for ${durationMs}ms")
 
-        val path = Path().apply { moveTo(x, y) }
+        val path = Path().apply {
+    moveTo(x, y)
+    lineTo(x + 1f, y + 1f)
+}
         val gesture = try {
             GestureDescription.Builder()
                 .addStroke(GestureDescription.StrokeDescription(path, 0L, durationMs))
