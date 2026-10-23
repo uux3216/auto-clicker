@@ -8,3 +8,5 @@
 - Accessibility Service settings button
 
 The target is the center of the P1 marker. Android may not immediately cancel a gesture already in progress. Test on a safe screen.
+
+End.
