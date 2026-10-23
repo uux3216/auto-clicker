@@ -11,12 +11,14 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.util.Log
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import kotlin.math.abs
 
 class TargetOverlayService : Service() {
+    private val debugTag = "HoldClickerDebug"
     private lateinit var wm: WindowManager
     private val overlays = mutableListOf<View>()
 
@@ -40,8 +42,11 @@ class TargetOverlayService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.i(debugTag, "OVERLAY_SERVICE_CREATED")
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         showFloatingItems()
+        TargetStore.overlayVisible = true
+        TargetStore.report("OVERLAY_CREATED", "Floating target and controls are visible")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -53,6 +58,7 @@ class TargetOverlayService : Service() {
         if (overlays.isNotEmpty()) return
         val metrics = resources.displayMetrics
         if (TargetStore.targetX < 0f || TargetStore.targetY < 0f) {
+            Log.i(debugTag, "TARGET_DEFAULTED_TO_SCREEN_CENTER: metrics=${metrics.widthPixels}x${metrics.heightPixels}")
             TargetStore.targetX = metrics.widthPixels / 2f
             TargetStore.targetY = metrics.heightPixels / 2f
         }
@@ -60,14 +66,28 @@ class TargetOverlayService : Service() {
         addControlIcon(android.R.drawable.ic_media_play, 0xff16803c.toInt(), dp(20), dp(170)) {
             val service = AutoClickAccessibilityService.instance
             if (service != null) {
+                Log.i(debugTag, "FLOATING_START_TAPPED: target=${TargetStore.targetX},${TargetStore.targetY}")
+                TargetStore.report("FLOATING_START_TAPPED", "Start pressed at X=${TargetStore.targetX.toInt()}, Y=${TargetStore.targetY.toInt()}")
                 service.startHoldLoop(TargetStore.holdSeconds, TargetStore.breakSeconds)
             } else {
-                // The user must enable this app's Accessibility Service in Android settings.
+                Log.e(debugTag, "FLOATING_START_FAILED: Accessibility Service is not connected")
+                TargetStore.report("FLOATING_START_FAILED", "Enable Accessibility Service first", "Accessibility instance is null")
+                // Enable this app in Android Accessibility settings.
             }
         }
         addControlIcon(android.R.drawable.ic_media_pause, 0xffc62828.toInt(), dp(20), dp(238)) {
+            Log.i(debugTag, "FLOATING_STOP_TAPPED")
+            TargetStore.report("FLOATING_STOP_TAPPED", "Stop icon pressed")
             AutoClickAccessibilityService.instance?.stopHoldLoop()
         }
+        addControlIcon(android.R.drawable.ic_menu_close_clear_cancel, 0xff424242.toInt(), dp(20), dp(306)) {
+            Log.i(debugTag, "FLOATING_CLOSE_TAPPED: stopping hold loop and removing floating controls")
+            TargetStore.report("FLOATING_CLOSE_TAPPED", "Closing floating controls")
+            AutoClickAccessibilityService.instance?.stopHoldLoop()
+            stopSelf()
+        }
+        TargetStore.overlayVisible = true
+        TargetStore.report("OVERLAY_VISIBLE", "Floating target and controls are visible")
     }
 
     private fun addControlIcon(iconRes: Int, color: Int, x: Int, y: Int, action: () -> Unit) {
@@ -84,7 +104,7 @@ class TargetOverlayService : Service() {
         }
         val lp = makeParams(dp(56), dp(56), x, y)
         installDrag(button, lp, onClick = action)
-        try { wm.addView(button, lp); overlays.add(button) } catch (_: Exception) {}
+        try { wm.addView(button, lp); overlays.add(button); Log.d(debugTag, "CONTROL_ADDED: x=$x y=$y") } catch (e: Exception) { Log.e(debugTag, "CONTROL_ADD_FAILED", e) }
     }
 
     private fun addTargetPoint() {
@@ -107,7 +127,7 @@ class TargetOverlayService : Service() {
             (TargetStore.targetY - size / 2f).toInt()
         )
         installDrag(point, lp, onClick = null, isTarget = true)
-        try { wm.addView(point, lp); overlays.add(point) } catch (_: Exception) {}
+        try { wm.addView(point, lp); overlays.add(point); Log.i(debugTag, "TARGET_ADDED: center=${TargetStore.targetX},${TargetStore.targetY} lp=${lp.x},${lp.y}") } catch (e: Exception) { Log.e(debugTag, "TARGET_ADD_FAILED", e) }
     }
 
     private fun installDrag(
@@ -144,6 +164,8 @@ class TargetOverlayService : Service() {
                             if (isTarget) {
                                 TargetStore.targetX = lp.x + v.width / 2f
                                 TargetStore.targetY = lp.y + v.height / 2f
+                                Log.d(debugTag, "TARGET_DRAGGED: view=${lp.x},${lp.y} center=${TargetStore.targetX},${TargetStore.targetY} raw=${event.rawX},${event.rawY}")
+                                TargetStore.report("TARGET_DRAGGED", "Target moved to X=${TargetStore.targetX.toInt()}, Y=${TargetStore.targetY.toInt()}")
                             }
                         }
                         return true
@@ -160,9 +182,12 @@ class TargetOverlayService : Service() {
     }
 
     override fun onDestroy() {
+        Log.i(debugTag, "OVERLAY_SERVICE_DESTROYED")
         AutoClickAccessibilityService.instance?.stopHoldLoop()
         overlays.toList().forEach { try { wm.removeView(it) } catch (_: Exception) {} }
         overlays.clear()
+        TargetStore.overlayVisible = false
+        TargetStore.report("OVERLAY_DESTROYED", "Floating controls removed")
         super.onDestroy()
     }
 

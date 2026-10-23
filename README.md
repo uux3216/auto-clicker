@@ -12,3 +12,6 @@ Push to `main` and download the APK from the GitHub Actions artifact.
 
 ## Important
 Grant overlay permission and enable the Hold Clicker Accessibility Service in Android settings. Android may not immediately cancel a gesture that is already in progress. Test on a safe, non-sensitive screen first.
+
+
+See `DEBUGGING.md` for Logcat instructions and diagnostic event meanings.
