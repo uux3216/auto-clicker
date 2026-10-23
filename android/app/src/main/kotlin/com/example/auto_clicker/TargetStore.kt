@@ -5,7 +5,7 @@ object TargetStore {
     @Volatile var breakSeconds: Long = 1
     @Volatile var running: Boolean = false
 
-    // Coordinates in physical screen pixels; updated by the draggable P1 marker.
-    @Volatile var targetX: Float = 540f
-    @Volatile var targetY: Float = 960f
+    // Center coordinates of the draggable floating target, in screen pixels.
+    @Volatile var targetX: Float = -1f
+    @Volatile var targetY: Float = -1f
 }

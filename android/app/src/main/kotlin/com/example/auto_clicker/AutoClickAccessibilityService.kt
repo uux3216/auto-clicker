@@ -49,10 +49,10 @@ class AutoClickAccessibilityService : AccessibilityService() {
     private fun runGesture(token: Int) {
         if (token != runToken || !running || gestureInFlight) return
 
+        // Use the center of the draggable floating target point, not the screen center.
         val display = resources.displayMetrics
-        // Use the user-positioned P1 marker, clamped inside the current display.
-        val x = TargetStore.targetX.coerceIn(1f, (display.widthPixels - 1).toFloat())
-        val y = TargetStore.targetY.coerceIn(1f, (display.heightPixels - 1).toFloat())
+        val x = if (TargetStore.targetX >= 0f) TargetStore.targetX else display.widthPixels / 2f
+        val y = if (TargetStore.targetY >= 0f) TargetStore.targetY else display.heightPixels / 2f
         val path = Path().apply { moveTo(x, y) }
         val durationMs = (TargetStore.holdSeconds * 1000L).coerceIn(1L, 60000L)
         val gesture = GestureDescription.Builder()
