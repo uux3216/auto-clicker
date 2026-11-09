@@ -7,9 +7,9 @@ Shizuku API: 13.1.5
 
 ## Important limitation
 
-This build is a **best-effort diagnostic prototype**, not a guaranteed live sensor-use detector. Android does not provide ordinary third-party apps with a universal API to identify every other app using Camera or Microphone. Shizuku provides user-authorized shell access, but `dumpsys appops`, `dumpsys media.camera`, and `dumpsys audio` output varies by Android build and OEM. Vivo firmware may omit or redact package attribution.
+This build uses a Shizuku UserService (instead of the private/deprecated `Shizuku.newProcess()` API) and is a **best-effort diagnostic prototype**, not a guaranteed live sensor-use detector. Android does not provide ordinary third-party apps with a universal API to identify every other app using Camera or Microphone. Shizuku provides user-authorized shell access, but `dumpsys appops`, `dumpsys media.camera`, and `dumpsys audio` output varies by Android build and OEM. Vivo firmware may omit or redact package attribution.
 
-The app deliberately labels any inferred package as **Possible active client** and does not claim certainty. A permission being granted is not proof that the sensor is currently active. It may return "Not identified" even while Android's green privacy indicator is visible.
+The app runs only three allowlisted, read-only diagnostic commands through its UserService. It deliberately labels any inferred package as **Possible active client** and does not claim certainty. A permission being granted is not proof that the sensor is currently active. It may return "Not identified" even while Android's green privacy indicator is visible.
 
 ## Shizuku setup on Vivo / Android 12
 

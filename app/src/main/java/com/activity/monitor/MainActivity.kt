@@ -1,5 +1,8 @@
 package com.activity.monitor
 
+import android.content.ComponentName
+import android.content.ServiceConnection
+import android.os.IBinder
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Bundle
@@ -70,16 +73,59 @@ private data class DiagnosticResult(
 )
 
 class MainActivity : ComponentActivity() {
+    @Volatile private var remoteService: IUserService? = null
+    @Volatile private var remoteServiceError: String? = null
+
+    private val userServiceArgs by lazy {
+        Shizuku.UserServiceArgs(
+            ComponentName(this, ShellUserService::class.java)
+        ).daemon(false)
+            .processNameSuffix("activity-monitor")
+            .tag("activity-monitor-shell-service")
+            .version(1)
+    }
+
+    private val userServiceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
+            remoteService = IUserService.Stub.asInterface(service)
+            remoteServiceError = null
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            remoteService = null
+            remoteServiceError = "Shizuku UserService disconnected. Reconnect and retry."
+        }
+    }
+
+    private fun bindRemoteService() {
+        if (!Shizuku.pingBinder()) {
+            remoteServiceError = "Shizuku service is not running."
+            return
+        }
+        if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+            remoteServiceError = "Grant Shizuku permission first."
+            return
+        }
+        try {
+            Shizuku.bindUserService(userServiceArgs, userServiceConnection)
+        } catch (t: Throwable) {
+            remoteServiceError = t.message ?: "Could not bind Shizuku UserService."
+        }
+    }
     private val permissionListener =
         Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
-            if (requestCode == SHIZUKU_REQUEST_CODE) {
-                // UI refreshes through its polling loop.
+            if (requestCode == SHIZUKU_REQUEST_CODE &&
+                grantResult == PackageManager.PERMISSION_GRANTED
+            ) {
+                bindRemoteService()
             }
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Shizuku.addRequestPermissionResultListener(permissionListener)
+
+        if (shizukuPermissionGranted()) bindRemoteService()
 
         setContent {
             MaterialTheme {
@@ -96,6 +142,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         Shizuku.removeRequestPermissionResultListener(permissionListener)
+        runCatching { Shizuku.unbindUserService(userServiceArgs, userServiceConnection, true) }
+        remoteService = null
         super.onDestroy()
     }
 
@@ -151,15 +199,14 @@ class MainActivity : ComponentActivity() {
         check(Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
             "Activity Monitor has not been granted Shizuku permission."
         }
-
-        val process = Shizuku.newProcess(arrayOf("sh", "-c", command), null, null)
-        val stdout = process.inputStream.bufferedReader().use { it.readText() }
-        val stderr = process.errorStream.bufferedReader().use { it.readText() }
-        val exit = process.waitFor()
-        if (exit != 0 && stdout.isBlank()) {
-            throw IllegalStateException(stderr.ifBlank { "Shell command failed ($exit)." })
+        val service = remoteService
+        if (service == null) {
+            bindRemoteService()
+            throw IllegalStateException(
+                remoteServiceError ?: "Shizuku UserService is connecting. Wait a moment and tap Test now again."
+            )
         }
-        return (stdout + "\n" + stderr).trim()
+        return service.runCommand(command)
     }
 
     private fun collectDiagnostic(): DiagnosticResult {
