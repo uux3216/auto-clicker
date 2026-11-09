@@ -16,7 +16,10 @@ android {
         versionName = "1.1.0-shizuku"
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        aidl = true
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

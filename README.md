@@ -40,3 +40,13 @@ Copy the repository contents to your existing repository and push to `main` or `
 ## Security
 
 The app only runs read-only diagnostic shell commands. It does not record audio/video, capture files, change other apps' permissions, or silently access sensors.
+
+
+## Build fix note
+
+AIDL generation is explicitly enabled with `buildFeatures { aidl = true }`.
+`ShellUserService` extends `Shizuku.UserService` and returns the generated
+`IUserService.Stub` binder from `onBind()`. This resolves the prior
+`Unresolved reference: IUserService` / `runCommand overrides nothing` errors
+when the AIDL source is included at
+`app/src/main/aidl/com/activity/monitor/IUserService.aidl`.
