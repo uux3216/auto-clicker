@@ -1,13 +1,9 @@
 package com.activity.monitor
 
-import android.app.AppOpsManager
-import android.app.usage.UsageEvents
-import android.app.usage.UsageStatsManager
-import android.content.Context
-import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Bundle
-import android.provider.Settings
+import android.widget.ImageView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
@@ -17,205 +13,436 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
+import rikka.shizuku.Shizuku
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-data class AppPermissionInfo(
-    val appName: String,
+private const val SHIZUKU_REQUEST_CODE = 4102
+
+private enum class PermissionCategory(val title: String, val permissions: Set<String>) {
+    CAMERA("Camera", setOf("android.permission.CAMERA")),
+    MICROPHONE("Microphone", setOf("android.permission.RECORD_AUDIO")),
+    LOCATION("Location", setOf(
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION"
+    )),
+    GALLERY("Gallery", setOf(
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO"
+    )),
+    FILES("Files", setOf(
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.MANAGE_EXTERNAL_STORAGE"
+    ))
+}
+
+private data class AppEntry(
+    val label: String,
     val packageName: String,
+    val isSystem: Boolean,
     val permissions: List<Pair<String, Boolean>>
 )
 
+private data class SensorState(
+    val resource: String,
+    val packageName: String?,
+    val status: String,
+    val detail: String
+)
+
+private data class DiagnosticResult(
+    val camera: SensorState,
+    val microphone: SensorState,
+    val rawSummary: String,
+    val timestamp: String
+)
+
 class MainActivity : ComponentActivity() {
+    private val permissionListener =
+        Shizuku.OnRequestPermissionResultListener { requestCode, grantResult ->
+            if (requestCode == SHIZUKU_REQUEST_CODE) {
+                // UI refreshes through its polling loop.
+            }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        Shizuku.addRequestPermissionResultListener(permissionListener)
+
         setContent {
             MaterialTheme {
                 ActivityMonitorScreen(
-                    hasUsageAccess = { hasUsageAccess() },
-                    openUsageSettings = {
-                        startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-                    },
-                    getForegroundApp = { findForegroundApp() },
-                    getPermissionInventory = { loadPermissionInventory() }
+                    hasShizukuPermission = { shizukuPermissionGranted() },
+                    shizukuRunning = { Shizuku.pingBinder() },
+                    requestShizukuPermission = { requestShizukuAccess() },
+                    getInventory = { loadPermissionInventory() },
+                    runDiagnostic = { collectDiagnostic() }
                 )
             }
         }
     }
 
-    private fun hasUsageAccess(): Boolean {
-        val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-        val mode = appOps.checkOpNoThrow(
-            AppOpsManager.OPSTR_GET_USAGE_STATS,
-            android.os.Process.myUid(),
-            packageName
-        )
-        return mode == AppOpsManager.MODE_ALLOWED
+    override fun onDestroy() {
+        Shizuku.removeRequestPermissionResultListener(permissionListener)
+        super.onDestroy()
     }
 
-    private fun findForegroundApp(): String? {
-        if (!hasUsageAccess()) return null
-
-        val usage = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-        val end = System.currentTimeMillis()
-        val begin = end - 10 * 60 * 1000L
-        val events = usage.queryEvents(begin, end)
-        val event = UsageEvents.Event()
-        var foregroundPackage: String? = null
-
-        while (events.hasNextEvent()) {
-            events.getNextEvent(event)
-            when (event.eventType) {
-                UsageEvents.Event.ACTIVITY_RESUMED -> foregroundPackage = event.packageName
-                UsageEvents.Event.ACTIVITY_PAUSED -> {
-                    if (foregroundPackage == event.packageName) foregroundPackage = null
-                }
-            }
+    private fun shizukuPermissionGranted(): Boolean {
+        return try {
+            Shizuku.pingBinder() &&
+                Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
+        } catch (_: Exception) {
+            false
         }
-        return foregroundPackage
+    }
+
+    private fun requestShizukuAccess() {
+        try {
+            if (!Shizuku.pingBinder()) return
+            if (Shizuku.isPreV11()) return
+            if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                Shizuku.requestPermission(SHIZUKU_REQUEST_CODE)
+            }
+        } catch (_: Exception) {
+            // The UI displays current Shizuku state and can be retried.
+        }
     }
 
     @Suppress("DEPRECATION")
-    private fun loadPermissionInventory(): List<AppPermissionInfo> {
+    private fun loadPermissionInventory(): List<AppEntry> {
         val pm = packageManager
-        val packages = pm.getInstalledPackages(PackageManager.GET_PERMISSIONS)
-        val relevant = mapOf(
-            "android.permission.CAMERA" to "Camera",
-            "android.permission.RECORD_AUDIO" to "Microphone",
-            "android.permission.ACCESS_FINE_LOCATION" to "Precise location",
-            "android.permission.ACCESS_COARSE_LOCATION" to "Approximate location",
-            "android.permission.ACCESS_BACKGROUND_LOCATION" to "Background location",
-            "android.permission.READ_EXTERNAL_STORAGE" to "Read shared storage",
-            "android.permission.WRITE_EXTERNAL_STORAGE" to "Write shared storage",
-            "android.permission.READ_MEDIA_IMAGES" to "Read images",
-            "android.permission.READ_MEDIA_VIDEO" to "Read videos",
-            "android.permission.READ_MEDIA_AUDIO" to "Read audio"
-        )
-
-        return packages.mapNotNull { info ->
-            val requested = info.requestedPermissions ?: return@mapNotNull null
-            val flags = info.requestedPermissionsFlags ?: IntArray(requested.size)
-            val found = requested.mapIndexedNotNull { index, permission ->
-                val label = relevant[permission] ?: return@mapIndexedNotNull null
+        val relevant = PermissionCategory.values().flatMap { it.permissions }.toSet()
+        return pm.getInstalledPackages(PackageManager.GET_PERMISSIONS).mapNotNull { pkg ->
+            val requested = pkg.requestedPermissions ?: return@mapNotNull null
+            val flags = pkg.requestedPermissionsFlags ?: IntArray(requested.size)
+            val matches = requested.mapIndexedNotNull { index, permission ->
+                if (permission !in relevant) return@mapIndexedNotNull null
                 val granted = index < flags.size &&
                     (flags[index] and android.content.pm.PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0
-                label to granted
+                permission to granted
             }
-            if (found.isEmpty()) return@mapNotNull null
-            val appName = try {
-                pm.getApplicationLabel(info.applicationInfo!!).toString()
+            if (matches.isEmpty()) return@mapNotNull null
+            val appInfo = pkg.applicationInfo ?: return@mapNotNull null
+            val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0 ||
+                (appInfo.flags and ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+            val label = try {
+                pm.getApplicationLabel(appInfo).toString()
             } catch (_: Exception) {
-                info.packageName
+                pkg.packageName
             }
-            AppPermissionInfo(appName, info.packageName, found)
-        }.sortedBy { it.appName.lowercase(Locale.getDefault()) }
-    }
-}
-
-@Composable
-private fun ActivityMonitorScreen(
-    hasUsageAccess: () -> Boolean,
-    openUsageSettings: () -> Unit,
-    getForegroundApp: () -> String?,
-    getPermissionInventory: () -> List<AppPermissionInfo>
-) {
-    var usageGranted by remember { mutableStateOf(hasUsageAccess()) }
-    var foregroundApp by remember { mutableStateOf<String?>(null) }
-    var inventory by remember { mutableStateOf(emptyList<AppPermissionInfo>()) }
-    var lastUpdated by remember { mutableStateOf("Waiting for access") }
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            usageGranted = hasUsageAccess()
-            if (usageGranted) {
-                foregroundApp = getForegroundApp()
-                inventory = getPermissionInventory()
-                lastUpdated = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            }
-            delay(2000)
-        }
+            AppEntry(label, pkg.packageName, isSystem, matches)
+        }.sortedBy { it.label.lowercase(Locale.getDefault()) }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBarCompat()
+    private fun runShell(command: String): String {
+        check(Shizuku.pingBinder()) { "Shizuku service is not running." }
+        check(Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED) {
+            "Activity Monitor has not been granted Shizuku permission."
         }
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            item {
-                Card {
-                    Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                        Text("Live app activity", style = MaterialTheme.typography.titleLarge)
-                        Spacer(Modifier.height(8.dp))
-                        if (usageGranted) {
-                            Text("Usage Access: Enabled", color = MaterialTheme.colorScheme.primary)
-                            Text(
-                                foregroundApp ?: "No foreground app event detected",
-                                style = MaterialTheme.typography.headlineSmall
-                            )
-                            Text("Updated: $lastUpdated", style = MaterialTheme.typography.bodySmall)
-                        } else {
-                            Text("Usage Access is required to identify the foreground app.")
-                            Spacer(Modifier.height(8.dp))
-                            Button(onClick = openUsageSettings) {
-                                Text("Grant Usage Access")
-                            }
-                        }
-                    }
+
+        val process = Shizuku.newProcess(arrayOf("sh", "-c", command), null, null)
+        val stdout = process.inputStream.bufferedReader().use { it.readText() }
+        val stderr = process.errorStream.bufferedReader().use { it.readText() }
+        val exit = process.waitFor()
+        if (exit != 0 && stdout.isBlank()) {
+            throw IllegalStateException(stderr.ifBlank { "Shell command failed ($exit)." })
+        }
+        return (stdout + "\n" + stderr).trim()
+    }
+
+    private fun collectDiagnostic(): DiagnosticResult {
+        // These dumps are diagnostic sources, not a guaranteed public live-usage API.
+        val appOps = runShell("dumpsys appops")
+        val cameraDump = runCatching { runShell("dumpsys media.camera") }.getOrDefault("")
+        val audioDump = runCatching { runShell("dumpsys audio") }.getOrDefault("")
+
+        val camera = findConservativeActivePackage(
+            resource = "Camera",
+            dumps = listOf(cameraDump, appOps),
+            activeHints = listOf("active camera", "camera client", "client package", "camera device")
+        )
+        val microphone = findConservativeActivePackage(
+            resource = "Microphone",
+            dumps = listOf(audioDump, appOps),
+            activeHints = listOf("recording", "record track", "active microphone", "audio record")
+        )
+
+        val summary = buildString {
+            appendLine("dumpsys appops: ${appOps.length} characters")
+            appendLine("dumpsys media.camera: ${cameraDump.length} characters")
+            appendLine("dumpsys audio: ${audioDump.length} characters")
+            appendLine()
+            appendLine("Camera diagnostic excerpt:")
+            appendLine(cameraDump.take(1800).ifBlank { "No output / access denied" })
+            appendLine()
+            appendLine("Audio diagnostic excerpt:")
+            appendLine(audioDump.take(1800).ifBlank { "No output / access denied" })
+        }
+
+        return DiagnosticResult(
+            camera = camera,
+            microphone = microphone,
+            rawSummary = summary,
+            timestamp = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
+        )
+    }
+
+    private fun findConservativeActivePackage(
+        resource: String,
+        dumps: List<String>,
+        activeHints: List<String>
+    ): SensorState {
+        val combined = dumps.joinToString("\n").lowercase(Locale.ROOT)
+        val packages = loadPermissionInventory()
+            .filter { app ->
+                val permission = if (resource == "Camera") {
+                    "android.permission.CAMERA"
+                } else {
+                    "android.permission.RECORD_AUDIO"
                 }
+                app.permissions.any { it.first == permission }
             }
-            item {
-                Text("Permission inventory", style = MaterialTheme.typography.titleLarge)
-                Text(
-                    "Shows permissions requested by installed apps and whether Android reports them as granted. This is not live permission usage.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            if (usageGranted && inventory.isEmpty()) {
-                item { Text("No matching permissions found.") }
-            }
-            items(inventory, key = { it.packageName }) { app ->
-                Card {
-                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                        Text(app.appName, style = MaterialTheme.typography.titleMedium)
-                        Text(app.packageName, style = MaterialTheme.typography.bodySmall)
-                        Spacer(Modifier.height(6.dp))
-                        app.permissions.forEach { (name, granted) ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(name, modifier = Modifier.weight(1f))
-                                Text(
-                                    if (granted) "Granted" else "Not granted",
-                                    color = if (granted) MaterialTheme.colorScheme.primary
-                                    else MaterialTheme.colorScheme.error,
-                                    style = MaterialTheme.typography.labelMedium
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            item {
-                Text(
-                    "Privacy note: Android 12 does not expose a general public API for third-party apps to read every other app's live camera, microphone, location, or file-access events. This app does not claim to detect those events.",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+            .map { it.packageName }
+            .filter { it.lowercase(Locale.ROOT) in combined }
+
+        val hasActiveHint = activeHints.any { it in combined }
+        return when {
+            packages.size == 1 && hasActiveHint -> SensorState(
+                resource, packages.first(), "Possible active client",
+                "Package name and an activity hint were found in system diagnostics. Verify on-device."
+            )
+            packages.isNotEmpty() -> SensorState(
+                resource, null, "Source not confirmed",
+                "Matching package text found, but no reliable active-client attribution."
+            )
+            else -> SensorState(
+                resource, null, "Not identified",
+                "System diagnostic output did not expose a reliable active package."
+            )
         }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TopAppBarCompat() {
-    TopAppBar(title = { Text("Activity Monitor") })
+private fun ActivityMonitorScreen(
+    hasShizukuPermission: () -> Boolean,
+    shizukuRunning: () -> Boolean,
+    requestShizukuPermission: () -> Unit,
+    getInventory: () -> List<AppEntry>,
+    runDiagnostic: () -> DiagnosticResult
+) {
+    var inventory by remember { mutableStateOf(emptyList<AppEntry>()) }
+    var selected by remember { mutableStateOf(PermissionCategory.CAMERA) }
+    var showSystem by remember { mutableStateOf(false) }
+    var shizukuUp by remember { mutableStateOf(shizukuRunning()) }
+    var shizukuGranted by remember { mutableStateOf(hasShizukuPermission()) }
+    var diagnostic by remember { mutableStateOf<DiagnosticResult?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var autoMonitor by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    fun refreshDiagnostic() {
+        if (busy || !shizukuUp || !shizukuGranted) return
+        scope.launch {
+            busy = true
+            try {
+                diagnostic = withContext(Dispatchers.IO) { runDiagnostic() }
+                error = null
+            } catch (t: Throwable) {
+                error = t.message ?: "Diagnostic failed."
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        inventory = getInventory()
+        while (isActive) {
+            shizukuUp = shizukuRunning()
+            shizukuGranted = hasShizukuPermission()
+            inventory = getInventory()
+            if (autoMonitor && shizukuUp && shizukuGranted && !busy) {
+                refreshDiagnostic()
+            }
+            delay(if (autoMonitor) 4000 else 8000)
+        }
+    }
+
+    val visibleApps = inventory.filter { app ->
+        (showSystem || !app.isSystem) &&
+            app.permissions.any { it.first in selected.permissions }
+    }
+
+    Scaffold(topBar = { TopAppBar(title = { Text("Activity Monitor") }) }) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Shizuku connection", style = MaterialTheme.typography.titleMedium)
+                    Text("Service: ${if (shizukuUp) "Running" else "Not running"}")
+                    Text("Permission: ${if (shizukuGranted) "Granted" else "Not granted"}")
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = requestShizukuPermission, enabled = shizukuUp && !shizukuGranted) {
+                            Text("Grant Shizuku")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                if (!shizukuUp) error = "Start Shizuku first."
+                                else if (!shizukuGranted) error = "Grant Shizuku permission first."
+                                else refreshDiagnostic()
+                            },
+                            enabled = shizukuUp && shizukuGranted && !busy
+                        ) { Text(if (busy) "Checking…" else "Test now") }
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Switch(checked = autoMonitor, onCheckedChange = { autoMonitor = it })
+                        Spacer(Modifier.width(8.dp))
+                        Text("Auto diagnostic polling (~4 sec)")
+                    }
+                    Text(
+                        "Important: this is best-effort diagnostics, not guaranteed real-time sensor attribution. A positive result is labelled 'Possible', never definitive.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            }
+
+            diagnostic?.let { result ->
+                Card(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp)) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("Sensor diagnostics · ${result.timestamp}", style = MaterialTheme.typography.titleMedium)
+                        SensorRow(result.camera)
+                        HorizontalDivider()
+                        SensorRow(result.microphone)
+                        var expanded by remember { mutableStateOf(false) }
+                        TextButton(onClick = { expanded = !expanded }) {
+                            Text(if (expanded) "Hide diagnostic excerpts" else "Show diagnostic excerpts")
+                        }
+                        if (expanded) {
+                            Text(result.rawSummary, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+            error?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(12.dp))
+            }
+
+            ScrollableTabRow(
+                selectedTabIndex = PermissionCategory.values().indexOf(selected),
+                edgePadding = 8.dp
+            ) {
+                PermissionCategory.values().forEach { category ->
+                    val count = inventory.count { app ->
+                        (showSystem || !app.isSystem) &&
+                            app.permissions.any { it.first in category.permissions }
+                    }
+                    Tab(
+                        selected = selected == category,
+                        onClick = { selected = category },
+                        text = {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(category.title)
+                                Text("$count", style = MaterialTheme.typography.labelSmall)
+                            }
+                        }
+                    )
+                }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 12.dp)) {
+                Checkbox(checked = showSystem, onCheckedChange = { showSystem = it })
+                Text("Show system app")
+                Spacer(Modifier.weight(1f))
+                Text("${visibleApps.size} apps", style = MaterialTheme.typography.labelMedium)
+            }
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(visibleApps, key = { it.packageName + selected.name }) { app ->
+                    val matching = app.permissions.filter { it.first in selected.permissions }
+                    Card {
+                        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.Top) {
+                            AppIcon(app.packageName, Modifier.size(44.dp))
+                            Spacer(Modifier.width(12.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(app.label, style = MaterialTheme.typography.titleMedium)
+                                Text(app.packageName, style = MaterialTheme.typography.bodySmall)
+                                matching.forEach { (permission, granted) ->
+                                    Text(
+                                        "${permissionLabel(permission)}: ${if (granted) "Granted" else "Not granted"}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = if (granted) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.error
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SensorRow(state: SensorState) {
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text("${state.resource}: ${state.status}", style = MaterialTheme.typography.titleSmall)
+        Text(state.packageName ?: "App package not confirmed", style = MaterialTheme.typography.bodyMedium)
+        Text(state.detail, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun AppIcon(packageName: String, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    AndroidView(
+        modifier = modifier,
+        factory = { ctx ->
+            ImageView(ctx).apply {
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setImageDrawable(runCatching {
+                    ctx.packageManager.getApplicationIcon(packageName)
+                }.getOrElse {
+                    ctx.getDrawable(android.R.drawable.sym_def_app_icon)
+                })
+            }
+        },
+        update = { view ->
+            view.setImageDrawable(runCatching {
+                context.packageManager.getApplicationIcon(packageName)
+            }.getOrElse {
+                context.getDrawable(android.R.drawable.sym_def_app_icon)
+            })
+        }
+    )
+}
+
+private fun permissionLabel(permission: String): String = when (permission) {
+    "android.permission.CAMERA" -> "Camera"
+    "android.permission.RECORD_AUDIO" -> "Microphone"
+    "android.permission.ACCESS_FINE_LOCATION" -> "Precise location"
+    "android.permission.ACCESS_COARSE_LOCATION" -> "Approximate location"
+    "android.permission.ACCESS_BACKGROUND_LOCATION" -> "Background location"
+    "android.permission.READ_EXTERNAL_STORAGE" -> "Read shared storage"
+    "android.permission.WRITE_EXTERNAL_STORAGE" -> "Write shared storage"
+    "android.permission.READ_MEDIA_IMAGES" -> "Read images"
+    "android.permission.READ_MEDIA_VIDEO" -> "Read videos"
+    "android.permission.MANAGE_EXTERNAL_STORAGE" -> "Manage all files"
+    else -> permission.substringAfterLast('.')
 }

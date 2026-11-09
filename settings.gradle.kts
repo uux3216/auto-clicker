@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "ActivityMonitor"
+rootProject.name = "ActivityMonitorShizuku"
 include(":app")
