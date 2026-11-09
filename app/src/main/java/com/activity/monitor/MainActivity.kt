@@ -101,7 +101,7 @@ class MainActivity : ComponentActivity() {
             val found = requested.mapIndexedNotNull { index, permission ->
                 val label = relevant[permission] ?: return@mapIndexedNotNull null
                 val granted = index < flags.size &&
-                    (flags[index] and PackageManager.REQUESTED_PERMISSION_GRANTED) != 0
+                    (flags[index] and android.content.pm.PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0
                 label to granted
             }
             if (found.isEmpty()) return@mapNotNull null
