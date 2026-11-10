@@ -1,36 +1,49 @@
 package com.activity.monitor
 
-import android.content.Intent
-import android.os.IBinder
-import rikka.shizuku.Shizuku
+import java.util.concurrent.TimeUnit
 
 /**
- * Runs in the Shizuku UserService process under the granted shell identity.
- * Exposes a narrowly allowlisted set of read-only diagnostics over AIDL.
+ * Shizuku UserService process. The class itself is the Binder implementation;
+ * it is not an Android Service and must not define onBind().
  */
-class ShellUserService : Shizuku.UserService() {
+class ShellUserService : IUserService.Stub() {
 
-    private val binder = object : IUserService.Stub() {
-        override fun runCommand(command: String): String {
-            val allowed = setOf(
-                "dumpsys appops",
-                "dumpsys media.camera",
-                "dumpsys audio"
-            )
-            require(command in allowed) { "Command is not allowed" }
+    override fun runCommand(command: String): String {
+        val allowed = setOf(
+            "dumpsys appops",
+            "dumpsys media.camera",
+            "dumpsys audio"
+        )
+        require(command in allowed) { "Command is not allowed" }
 
-            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
-            val stdout = process.inputStream.bufferedReader().use { it.readText() }
-            val stderr = process.errorStream.bufferedReader().use { it.readText() }
-            val exit = process.waitFor()
+        val process = ProcessBuilder("sh", "-c", command)
+            .redirectErrorStream(true)
+            .start()
 
-            return buildString {
-                appendLine("EXIT_CODE=$exit")
-                if (stdout.isNotBlank()) appendLine(stdout)
-                if (stderr.isNotBlank()) appendLine(stderr)
-            }.trim()
+        val output = StringBuilder()
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(12)
+        process.inputStream.bufferedReader().use { reader ->
+            while (output.length < MAX_OUTPUT_CHARS &&
+                System.nanoTime() < deadline
+            ) {
+                val line = reader.readLine() ?: break
+                output.append(line).append('\n')
+            }
         }
+
+        val finished = process.waitFor(1, TimeUnit.SECONDS)
+        if (!finished) process.destroyForcibly()
+
+        return buildString {
+            appendLine("EXIT_CODE=${if (finished) process.exitValue() else "TIMEOUT"}")
+            append(output)
+            if (output.length >= MAX_OUTPUT_CHARS) {
+                appendLine("\n[Output truncated]")
+            }
+        }.take(MAX_OUTPUT_CHARS + 100)
     }
 
-    override fun onBind(intent: Intent?): IBinder = binder
+    private companion object {
+        const val MAX_OUTPUT_CHARS = 100_000
+    }
 }

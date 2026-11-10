@@ -42,12 +42,14 @@ private enum class PermissionCategory(val title: String, val permissions: Set<St
     GALLERY("Gallery", setOf(
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.READ_MEDIA_IMAGES",
-        "android.permission.READ_MEDIA_VIDEO"
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
     )),
     FILES("Files", setOf(
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
-        "android.permission.MANAGE_EXTERNAL_STORAGE"
+        "android.permission.MANAGE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_AUDIO"
     ))
 }
 
@@ -251,8 +253,48 @@ class MainActivity : ComponentActivity() {
         dumps: List<String>,
         activeHints: List<String>
     ): SensorState {
-        val combined = dumps.joinToString("\n").lowercase(Locale.ROOT)
-        val packages = loadPermissionInventory()
+        // Do not infer activity merely because a package name and generic word
+        // (e.g. "recording") occur somewhere in a large dumpsys output.
+        // Require a package-scoped AppOps block and an explicit running/active flag.
+        val operation = if (resource == "Camera") "CAMERA" else "RECORD_AUDIO"
+        val appOpsDump = dumps.lastOrNull().orEmpty()
+        val packageHeader = Regex(
+            pattern = """^\s*Package\s+([A-Za-z0-9_.]+)\s*:?$""",
+            option = RegexOption.IGNORE_CASE
+        )
+        val activeFlag = Regex(
+            pattern = """\b(running|active)\s*=\s*true\b""",
+            option = RegexOption.IGNORE_CASE
+        )
+
+        val candidates = linkedSetOf<String>()
+        var currentPackage: String? = null
+        var matchingOperationSeen = false
+
+        for (line in appOpsDump.lines()) {
+            val header = packageHeader.find(line)
+            if (header != null) {
+                currentPackage = header.groupValues[1]
+                matchingOperationSeen = false
+                continue
+            }
+
+            if (currentPackage != null &&
+                line.contains(operation, ignoreCase = true)
+            ) {
+                matchingOperationSeen = true
+            }
+
+            if (currentPackage != null &&
+                matchingOperationSeen &&
+                activeFlag.containsMatchIn(line)
+            ) {
+                candidates += currentPackage
+                matchingOperationSeen = false
+            }
+        }
+
+        val installedAndRequesting = loadPermissionInventory()
             .filter { app ->
                 val permission = if (resource == "Camera") {
                     "android.permission.CAMERA"
@@ -262,21 +304,28 @@ class MainActivity : ComponentActivity() {
                 app.permissions.any { it.first == permission }
             }
             .map { it.packageName }
-            .filter { it.lowercase(Locale.ROOT) in combined }
+            .toSet()
 
-        val hasActiveHint = activeHints.any { it in combined }
+        val verifiedCandidates = candidates.filter { it in installedAndRequesting }
+
         return when {
-            packages.size == 1 && hasActiveHint -> SensorState(
-                resource, packages.first(), "Possible active client",
-                "Package name and an activity hint were found in system diagnostics. Verify on-device."
+            verifiedCandidates.size == 1 -> SensorState(
+                resource,
+                verifiedCandidates.first(),
+                "Active according to AppOps",
+                "A package-scoped $operation AppOps entry reported running=true or active=true. Verify against the Android privacy indicator."
             )
-            packages.isNotEmpty() -> SensorState(
-                resource, null, "Source not confirmed",
-                "Matching package text found, but no reliable active-client attribution."
+            verifiedCandidates.size > 1 -> SensorState(
+                resource,
+                null,
+                "Multiple active candidates",
+                "More than one package has an active AppOps entry; this screen will not guess which one owns the sensor."
             )
             else -> SensorState(
-                resource, null, "Not identified",
-                "System diagnostic output did not expose a reliable active package."
+                resource,
+                null,
+                "Not identified",
+                "No package-scoped active AppOps entry was found. This does not prove the sensor is inactive; Vivo/Android may expose a different diagnostic format."
             )
         }
     }
@@ -490,6 +539,8 @@ private fun permissionLabel(permission: String): String = when (permission) {
     "android.permission.WRITE_EXTERNAL_STORAGE" -> "Write shared storage"
     "android.permission.READ_MEDIA_IMAGES" -> "Read images"
     "android.permission.READ_MEDIA_VIDEO" -> "Read videos"
+    "android.permission.READ_MEDIA_VISUAL_USER_SELECTED" -> "Selected photos and videos"
+    "android.permission.READ_MEDIA_AUDIO" -> "Read audio"
     "android.permission.MANAGE_EXTERNAL_STORAGE" -> "Manage all files"
     else -> permission.substringAfterLast('.')
 }
