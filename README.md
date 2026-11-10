@@ -57,3 +57,12 @@ It does not record audio/video, change permissions, or read other apps' private 
 ## Build verification status
 
 This ZIP contains source code and CI configuration. It has not been executed by GitHub Actions from this environment; the first CI run is still required to verify compilation on GitHub's runner.
+
+
+## GitHub Actions SDK setup note
+
+The workflow uses the Android SDK command-line tools already provisioned on
+GitHub-hosted Ubuntu runners and installs only `platforms;android-35` and
+`build-tools;35.0.0`. It deliberately does not request the obsolete SDK
+package named `tools`, which causes `Failed to find package 'tools'` on
+current SDK repositories.
