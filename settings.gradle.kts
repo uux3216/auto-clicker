@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "ActivityMonitorShizuku"
+rootProject.name = "SpiFlashProgrammer"
 include(":app")
