@@ -12,3 +12,10 @@ allprojects {
         }
     }
 }
+
+// Lint is not needed for a sideload APK and crashes on some plugin sources; skip it.
+allprojects {
+    tasks.configureEach { t ->
+        if (t.name.startsWith('lint')) { t.enabled = false }
+    }
+}
