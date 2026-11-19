@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'package:path_provider/path_provider.dart';
+import 'dirs.dart';
 import 'models.dart';
 
 /// Chat history + identity, saved as one JSON file (written safely via a temp file).
@@ -44,14 +44,8 @@ class Store {
   }
 
   Future<void> load() async {
-    final docs = await getApplicationDocumentsDirectory();
-    _file = File('${docs.path}/hotspotlink.json');
-    Directory? ext;
-    try {
-      ext = await getExternalStorageDirectory();
-    } catch (_) {}
-    media = Directory('${(ext ?? docs).path}/media');
-    await media.create(recursive: true);
+    _file = File('${appDir().path}/hotspotlink.json');
+    media = mediaDir();
     if (!await _file.exists()) return;
     try {
       final j = jsonDecode(await _file.readAsString()) as Map;
