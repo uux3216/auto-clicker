@@ -1,7 +1,7 @@
 name: hotspotlink
 description: WhatsApp-like chat, groups, calls and file sharing over hotspot
 publish_to: none
-version: 2.0.0+1
+version: 3.0.0+1
 environment:
   sdk: '>=3.3.0 <4.0.0'
 dependencies:

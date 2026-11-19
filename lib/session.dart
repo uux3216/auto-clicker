@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'discovery.dart';
 import 'hub.dart';
 import 'models.dart';
 import 'store.dart';
@@ -40,6 +41,7 @@ class Session extends ChangeNotifier {
   Hub? hub;
   List<String> hubIps = [];
   WebSocket? _ws;
+  Announcer? _ann;
   String _host = '';
   bool _want = false;
   final peers = <String, Peer>{};
@@ -76,6 +78,10 @@ class Session extends ChangeNotifier {
     hub = Hub(store.media);
     await hub!.start();
     hubIps = await localIps();
+    try {
+      _ann = Announcer();
+      await _ann!.start(myName);
+    } catch (_) {}
     _host = '127.0.0.1';
     _want = true;
     await _open();
@@ -96,6 +102,7 @@ class Session extends ChangeNotifier {
     ws.listen(_onData, onDone: () => _lost(ws), onError: (_) => _lost(ws));
     notifyListeners();
     _flushOutbox();
+    _retryDownloads();
   }
 
   void _lost(WebSocket ws) {
@@ -123,6 +130,8 @@ class Session extends ChangeNotifier {
     final w = _ws;
     _ws = null;
     await w?.close();
+    _ann?.stop();
+    _ann = null;
     await hub?.stop();
     hub = null;
     peers.clear();
@@ -234,6 +243,15 @@ class Session extends ChangeNotifier {
     }
   }
 
+  void _retryDownloads() {
+    final l = store.msgs
+        .where((m) => !m.mine && m.isFile && m.path == null && m.dl != dlLoading)
+        .toList();
+    for (final m in l) {
+      _download(m);
+    }
+  }
+
   void _flushOutbox() {
     for (final m in store.msgs.where((m) => m.mine && m.status == stSending).toList()) {
       _push(m);
@@ -245,7 +263,7 @@ class Session extends ChangeNotifier {
       hub!.served[m.fid!] = m.path!;
       return true;
     }
-    final c = HttpClient();
+    final c = HttpClient()..connectionTimeout = const Duration(seconds: 8);
     try {
       final f = File(m.path!);
       final len = await f.length();
@@ -271,7 +289,18 @@ class Session extends ChangeNotifier {
 
   Future<void> retryDownload(Msg m) => _download(m);
 
+  final _dling = <String>{};
+
   Future<void> _download(Msg m) async {
+    if (!_dling.add(m.id)) return;
+    try {
+      await _download2(m);
+    } finally {
+      _dling.remove(m.id);
+    }
+  }
+
+  Future<void> _download2(Msg m) async {
     if (hub != null) {
       final p = hub!.served[m.fid];
       if (p != null) {
@@ -287,7 +316,7 @@ class Session extends ChangeNotifier {
     m.dl = dlLoading;
     m.progress = 0;
     notifyListeners();
-    final c = HttpClient();
+    final c = HttpClient()..connectionTimeout = const Duration(seconds: 8);
     try {
       final dest = File('${store.media.path}/${m.fid}_${safeName(m.name ?? 'file')}');
       final req = await c.getUrl(
@@ -335,6 +364,7 @@ class Session extends ChangeNotifier {
       id: mid, thread: thread, from: from, fromName: m['fromName'] ?? '', kind: m['kind'],
       mine: false, text: m['text'] ?? '', fid: m['fid'], name: m['name'], size: m['size'] ?? 0,
       ts: m['ts'] ?? DateTime.now().millisecondsSinceEpoch, status: stDelivered,
+      dl: m['fid'] != null ? dlLoading : dlNone,
     );
     store.add(msg);
     if (openThread != thread) store.unread[thread] = (store.unread[thread] ?? 0) + 1;
@@ -353,6 +383,14 @@ class Session extends ChangeNotifier {
   }
 
   void _onData(dynamic d) {
+    try {
+      _handle(d);
+    } catch (e) {
+      debugPrint('msg error: $e');
+    }
+  }
+
+  void _handle(dynamic d) {
     final m = jsonDecode(d as String) as Map;
     switch (m['t']) {
       case 'peers':
@@ -453,7 +491,19 @@ class Session extends ChangeNotifier {
 
   CallPeer _cp(String id) => cps.putIfAbsent(id, () => CallPeer(id));
 
+  bool _busyCall = false;
+
   Future<void> startCall(String thread, bool video) async {
+    if (_busyCall) return;
+    _busyCall = true;
+    try {
+      await _startCall(thread, video);
+    } finally {
+      _busyCall = false;
+    }
+  }
+
+  Future<void> _startCall(String thread, bool video) async {
     if (inCall || incoming != null) return;
     final targets = callTargets(thread);
     if (targets.isEmpty) {
@@ -487,7 +537,7 @@ class Session extends ChangeNotifier {
   }
 
   void _onInvite(Map m) {
-    if (inCall || incoming != null) {
+    if (inCall || incoming != null || _busyCall) {
       _send({'t': 'decline', 'to': m['from'], 'cid': m['cid']});
       return;
     }
@@ -503,15 +553,30 @@ class Session extends ChangeNotifier {
   }
 
   Future<void> acceptCall() async {
+    if (_busyCall) return;
+    _busyCall = true;
+    try {
+      await _acceptCall();
+    } finally {
+      _busyCall = false;
+    }
+  }
+
+  Future<void> _acceptCall() async {
     final inc = incoming;
     if (inc == null) return;
-    incoming = null;
     _inTimer?.cancel();
     if (!await _openMedia(inc['video'] == true)) {
+      incoming = null;
       declineAll(inc);
       notifyListeners();
       return;
     }
+    if (incoming == null || incoming!['cid'] != inc['cid']) {
+      await _closeLocal();
+      return;
+    }
+    incoming = null;
     cid = inc['cid'];
     callVideo = inc['video'] == true;
     callThread = _threadOfInvite(inc);
@@ -662,6 +727,16 @@ class Session extends ChangeNotifier {
       if (id != myId) _send({'t': 'leave', 'to': id, 'cid': cid});
     }
     _endCall();
+  }
+
+  Future<void> _closeLocal() async {
+    final l = local;
+    local = null;
+    localR.srcObject = null;
+    for (final t in l?.getTracks() ?? <MediaStreamTrack>[]) {
+      await t.stop();
+    }
+    await l?.dispose();
   }
 
   Future<void> _endCall() async {

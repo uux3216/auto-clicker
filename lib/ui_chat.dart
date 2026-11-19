@@ -227,15 +227,18 @@ class Bubble extends StatelessWidget {
     );
   }
 
-  Widget _overlay(Widget child) => Stack(alignment: Alignment.center, children: [
+  Widget _overlay(Widget child) {
+    final ok = m.path != null && File(m.path!).existsSync();
+    return Stack(alignment: Alignment.center, children: [
         child,
         if (!m.mine && m.dl == dlLoading)
           CircularProgressIndicator(value: m.progress > 0 ? m.progress : null),
-        if (!m.mine && m.dl == dlFailed)
+        if (!m.mine && (m.dl == dlFailed || (m.dl == dlDone && !ok)))
           IconButton.filled(onPressed: () => app.retryDownload(m), icon: const Icon(Icons.refresh)),
         if (m.mine && m.status == stSending)
           CircularProgressIndicator(value: m.progress > 0 ? m.progress : null),
       ]);
+  }
 
   Widget _content(BuildContext c) {
     final ok = m.path != null && File(m.path!).existsSync();
@@ -275,7 +278,8 @@ class Bubble extends StatelessWidget {
             Flexible(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text(m.name ?? '', maxLines: 2, overflow: TextOverflow.ellipsis),
-              Text(fmtSize(m.size), style: const TextStyle(fontSize: 11, color: Colors.black54)),
+              Text(fmtSize(m.size),
+                  style: TextStyle(fontSize: 11, color: Theme.of(c).colorScheme.onSurfaceVariant)),
             ])),
           ]),
         ));
@@ -319,12 +323,12 @@ class Bubble extends StatelessWidget {
             Align(
               alignment: Alignment.bottomRight,
               child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Text(hm(m.ts), style: const TextStyle(fontSize: 10, color: Colors.black54)),
+                Text(hm(m.ts), style: TextStyle(fontSize: 10, color: cs.onSurfaceVariant)),
                 if (m.mine) ...[
                   const SizedBox(width: 3),
                   Icon(tick,
                       size: 14,
-                      color: m.status == stDelivered ? Colors.blue : Colors.black45),
+                      color: m.status == stDelivered ? Colors.blue : cs.onSurfaceVariant),
                 ],
               ]),
             ),

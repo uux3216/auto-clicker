@@ -18,6 +18,15 @@ class Hub {
 
   Future<void> start() async {
     _http = await HttpServer.bind(InternetAddress.anyIPv4, port, shared: true);
+    try {
+      for (final e in dir.listSync()) {
+        if (e is File) {
+          final n = e.uri.pathSegments.last;
+          final i = n.indexOf('_');
+          if (i > 0) served[n.substring(0, i)] = e.path;
+        }
+      }
+    } catch (_) {}
     _http!.listen(_handle, onError: (_) {});
   }
 

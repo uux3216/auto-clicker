@@ -62,8 +62,15 @@ class Msg {
         kind: j['kind'], mine: j['mine'] == true, text: j['text'] ?? '',
         fid: j['fid'], name: j['name'], path: j['path'], size: j['size'] ?? 0,
         ts: j['ts'], status: j['status'] ?? stSent,
-        dl: (j['dl'] ?? 0) == dlLoading ? dlFailed : (j['dl'] ?? 0),
+        dl: _dlFix(j),
       );
+}
+
+int _dlFix(Map j) {
+  final d = (j['dl'] ?? 0) as int;
+  if (d == dlLoading) return dlFailed;
+  if (j['fid'] != null && j['mine'] != true && d != dlDone) return dlFailed;
+  return d;
 }
 
 String previewOf(Msg m) {

@@ -5,11 +5,12 @@ import 'dart:math';
 import 'package:path_provider/path_provider.dart';
 import 'models.dart';
 
-/// Chat history + identity, saved as one JSON file.
+/// Chat history + identity, saved as one JSON file (written safely via a temp file).
 class Store {
   late File _file;
   late Directory media;
   Timer? _t;
+  bool _writing = false, _again = false;
   String id = '', name = '';
   final msgs = <Msg>[];
   final _ids = <String>{};
@@ -45,7 +46,10 @@ class Store {
   Future<void> load() async {
     final docs = await getApplicationDocumentsDirectory();
     _file = File('${docs.path}/hotspotlink.json');
-    final ext = await getExternalStorageDirectory();
+    Directory? ext;
+    try {
+      ext = await getExternalStorageDirectory();
+    } catch (_) {}
     media = Directory('${(ext ?? docs).path}/media');
     await media.create(recursive: true);
     if (!await _file.exists()) return;
@@ -71,14 +75,30 @@ class Store {
   }
 
   Future<void> _flush() async {
-    final j = {
-      'id': id,
-      'name': name,
-      'names': names,
-      'unread': unread,
-      'groups': [for (final g in groups.values) g.toJson()],
-      'msgs': [for (final m in msgs) m.toJson()],
-    };
-    await _file.writeAsString(jsonEncode(j));
+    if (_writing) {
+      _again = true;
+      return;
+    }
+    _writing = true;
+    try {
+      final j = {
+        'id': id,
+        'name': name,
+        'names': names,
+        'unread': unread,
+        'groups': [for (final g in groups.values) g.toJson()],
+        'msgs': [for (final m in msgs) m.toJson()],
+      };
+      final tmp = File('${_file.path}.tmp');
+      await tmp.writeAsString(jsonEncode(j));
+      await tmp.rename(_file.path);
+    } catch (_) {
+    } finally {
+      _writing = false;
+      if (_again) {
+        _again = false;
+        save();
+      }
+    }
   }
 }

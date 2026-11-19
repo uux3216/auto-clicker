@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:network_info_plus/network_info_plus.dart';
+import 'discovery.dart';
 import 'models.dart';
 import 'session.dart';
 import 'ui_chat.dart';
@@ -13,13 +14,26 @@ class Home extends StatefulWidget {
 class _HomeState extends State<Home> {
   late final name = TextEditingController(text: app.myName);
   final ip = TextEditingController(text: '192.168.43.1');
+  final finder = Finder();
   String? err;
   bool busy = false;
 
   @override
   void initState() {
     super.initState();
+    finder.onChange = () {
+      if (mounted) setState(() {});
+    };
+    finder.start().catchError((_) {});
     _prep();
+  }
+
+  @override
+  void dispose() {
+    finder.stop();
+    name.dispose();
+    ip.dispose();
+    super.dispose();
   }
 
   Future<void> _prep() async {
@@ -29,7 +43,7 @@ class _HomeState extends State<Home> {
     } catch (_) {}
   }
 
-  Future<void> _go(bool host) async {
+  Future<void> _go(bool host, {String? to}) async {
     final n = name.text.trim();
     if (n.isEmpty) {
       setState(() => err = 'আগে আপনার নাম লিখুন');
@@ -44,20 +58,21 @@ class _HomeState extends State<Home> {
       if (host) {
         await app.startHost();
       } else {
-        await app.startJoin(ip.text.trim());
+        await app.startJoin((to ?? ip.text).trim());
       }
       if (!mounted) return;
       setState(() => busy = false);
       await Navigator.push(context, MaterialPageRoute(builder: (_) => const MainPage()));
     } catch (e) {
       await app.leave();
-      if (mounted) setState(() => err = '$e');
+      if (mounted) setState(() => err = 'সংযোগ হয়নি: $e');
     }
     if (mounted) setState(() => busy = false);
   }
 
   @override
   Widget build(BuildContext context) {
+    final hosts = finder.found.entries.toList();
     return Scaffold(
       appBar: AppBar(title: const Text('HotspotLink')),
       body: ListView(padding: const EdgeInsets.all(20), children: [
@@ -65,13 +80,31 @@ class _HomeState extends State<Home> {
             controller: name,
             decoration: const InputDecoration(labelText: 'আপনার নাম', border: OutlineInputBorder())),
         const SizedBox(height: 20),
-        const Text('একজন হটস্পট চালু করে "হোস্ট" চাপুন। বাকিরা সেই হটস্পটে কানেক্ট হয়ে "জয়েন" চাপুন।'),
+        const Text('একজন হটস্পট চালু করে "হোস্ট" চাপুন। বাকিরা সেই হটস্পটে কানেক্ট হয়ে নিচে হোস্ট বেছে নিন।'),
         const SizedBox(height: 12),
         FilledButton.icon(
             onPressed: busy ? null : () => _go(true),
             icon: const Icon(Icons.wifi_tethering),
             label: const Text('হোস্ট (আমি হটস্পট দিচ্ছি)')),
-        const Divider(height: 40),
+        const Divider(height: 36),
+        const Text('কাছের হোস্ট', style: TextStyle(fontWeight: FontWeight.bold)),
+        if (hosts.isEmpty)
+          const Padding(
+              padding: EdgeInsets.symmetric(vertical: 12),
+              child: Text('খোঁজা হচ্ছে… (আগে হটস্পটের Wi-Fi তে কানেক্ট হন)')),
+        for (final h in hosts)
+          Card(
+            child: ListTile(
+              leading: const Icon(Icons.wifi),
+              title: Text(h.value),
+              subtitle: Text(h.key),
+              trailing: FilledButton(
+                  onPressed: busy ? null : () => _go(false, to: h.key), child: const Text('জয়েন')),
+            ),
+          ),
+        const Divider(height: 36),
+        const Text('খুঁজে না পেলে IP দিন', style: TextStyle(fontWeight: FontWeight.bold)),
+        const SizedBox(height: 8),
         TextField(
             controller: ip,
             keyboardType: TextInputType.number,
@@ -80,7 +113,7 @@ class _HomeState extends State<Home> {
         FilledButton.tonalIcon(
             onPressed: busy ? null : () => _go(false),
             icon: const Icon(Icons.login),
-            label: const Text('জয়েন')),
+            label: const Text('IP দিয়ে জয়েন')),
         if (busy) const Padding(padding: EdgeInsets.only(top: 16), child: LinearProgressIndicator()),
         if (err != null)
           Padding(
