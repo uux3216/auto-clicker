@@ -1,0 +1,14 @@
+// Force every Android module (app + plugins) to compile against API 36,
+// because newer androidx libraries require it.
+allprojects {
+    afterEvaluate { p ->
+        def android = p.extensions.findByName('android')
+        if (android != null) {
+            try {
+                android.compileSdkVersion(36)
+            } catch (Throwable e1) {
+                try { android.compileSdk = 36 } catch (Throwable e2) { }
+            }
+        }
+    }
+}
