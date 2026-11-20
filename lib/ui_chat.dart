@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:record/record.dart';
+import 'package:video_player/video_player.dart';
 import 'models.dart';
 import 'session.dart';
 
@@ -215,6 +216,22 @@ class Bubble extends StatelessWidget {
                   Clipboard.setData(ClipboardData(text: m.text));
                   Navigator.pop(c);
                 }),
+          if (m.isFile && m.path != null && (m.kind == 'image' || m.kind == 'video'))
+            ListTile(
+                leading: const Icon(Icons.download),
+                title: const Text('গ্যালারিতে সেভ করুন'),
+                onTap: () {
+                  Navigator.pop(c);
+                  app.saveToGallery(m);
+                }),
+          if (m.isFile && m.path != null && m.kind != 'image' && m.kind != 'video')
+            ListTile(
+                leading: const Icon(Icons.download),
+                title: const Text('ফোনের Download ফোল্ডারে সেভ'),
+                onTap: () {
+                  Navigator.pop(c);
+                  app.saveToDownloads(m);
+                }),
           ListTile(
               leading: const Icon(Icons.delete),
               title: const Text('ডিলিট (শুধু আমার ফোনে)'),
@@ -257,7 +274,10 @@ class Bubble extends StatelessWidget {
         ));
       case 'video':
         return _overlay(GestureDetector(
-          onTap: ok ? () => OpenFilex.open(m.path!) : null,
+          onTap: ok
+              ? () => Navigator.push(
+                  c, MaterialPageRoute(builder: (_) => VideoPage(path: m.path!)))
+              : null,
           child: Container(
               width: 200,
               height: 130,
@@ -414,6 +434,64 @@ class _VoicePlayerState extends State<VoicePlayer> {
         ),
         Icon(widget.voice ? Icons.mic : Icons.music_note, size: 16),
       ]),
+    );
+  }
+}
+
+
+class VideoPage extends StatefulWidget {
+  final String path;
+  const VideoPage({super.key, required this.path});
+  @override
+  State<VideoPage> createState() => _VideoPageState();
+}
+
+class _VideoPageState extends State<VideoPage> {
+  late final VideoPlayerController c = VideoPlayerController.file(File(widget.path));
+  bool ready = false;
+
+  @override
+  void initState() {
+    super.initState();
+    c.addListener(() {
+      if (mounted) setState(() {});
+    });
+    c.initialize().then((_) {
+      if (!mounted) return;
+      setState(() => ready = true);
+      c.play();
+    }).catchError((e) {
+      app.onNotice?.call('ভিডিও চালানো যায়নি: $e');
+    });
+  }
+
+  @override
+  void dispose() {
+    c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(backgroundColor: Colors.black, foregroundColor: Colors.white),
+      body: Center(
+          child: ready
+              ? AspectRatio(aspectRatio: c.value.aspectRatio, child: VideoPlayer(c))
+              : const CircularProgressIndicator()),
+      bottomNavigationBar: ready
+          ? SafeArea(
+              child: Row(children: [
+                IconButton(
+                    color: Colors.white,
+                    icon: Icon(c.value.isPlaying ? Icons.pause : Icons.play_arrow),
+                    onPressed: () => c.value.isPlaying ? c.pause() : c.play()),
+                Expanded(child: VideoProgressIndicator(c, allowScrubbing: true)),
+                const SizedBox(width: 12),
+              ]),
+            )
+          : null,
     );
   }
 }

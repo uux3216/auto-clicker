@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 String safeName(String n) => n.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
 
@@ -76,7 +77,11 @@ class Hub {
     String? id;
     ws.pingInterval = const Duration(seconds: 5);
     ws.listen((d) {
-      final m = jsonDecode(d as String) as Map;
+      if (d is! String) {
+        if (id != null) _routeBinary(id!, d as List<int>);
+        return;
+      }
+      final m = jsonDecode(d) as Map;
       if (m['t'] == 'hello') {
         final me = m['id'] as String;
         id = me;
@@ -98,6 +103,24 @@ class Hub {
         _broadcastPeers();
       }
     }, onError: (_) {});
+  }
+
+  /// Media frame from a client: [type][n][n x 12-byte target ids][payload]
+  /// -> every target gets: [type][12-byte sender id][payload]
+  void _routeBinary(String from, List<int> d) {
+    if (d.length < 2) return;
+    final n = d[1];
+    final end = 2 + n * 12;
+    if (d.length < end) return;
+    final b = BytesBuilder(copy: false);
+    b.addByte(d[0]);
+    b.add(ascii.encode(from.padRight(12).substring(0, 12)));
+    b.add(d.sublist(end));
+    final out = b.takeBytes();
+    for (var i = 0; i < n; i++) {
+      final t = ascii.decode(d.sublist(2 + i * 12, 2 + (i + 1) * 12)).trim();
+      _socks[t]?.add(out);
+    }
   }
 
   void _route(String from, Map m) {

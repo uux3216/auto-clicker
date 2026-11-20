@@ -1,4 +1,4 @@
-# HotspotLink v3
-WhatsApp-style chat over a Wi-Fi hotspot (no internet): 1:1 + groups, history, photos/videos/files,
-voice notes, audio/video calls (group mesh), camera, speaker, mic controls, auto host discovery.
+# HotspotLink v4
+WhatsApp-style chat over a Wi-Fi hotspot (no internet). Calls use an own audio/video
+transport relayed by the host phone (WebRTC cannot see the hotspot interface on Android).
 Push to GitHub -> Actions -> "Build APK" -> download artifact `hotspotlink-apk`.

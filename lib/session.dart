@@ -1,10 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:gal/gal.dart';
+import 'package:record/record.dart';
 import 'discovery.dart';
 import 'hub.dart';
+import 'media.dart';
 import 'models.dart';
 import 'store.dart';
 
@@ -16,15 +21,10 @@ class Peer {
 
 class CallPeer {
   final String id;
-  final RTCVideoRenderer r = RTCVideoRenderer();
-  late final Future<void> ready;
-  Future<RTCPeerConnection>? pcf;
-  RTCPeerConnection? pc;
-  bool present = false, connected = false, remoteSet = false, offered = false;
-  final pending = <RTCIceCandidate>[];
-  CallPeer(this.id) {
-    ready = r.initialize();
-  }
+  bool present = false;
+  Uint8List? frame; // latest video frame (JPEG)
+  int rot = 0; // quarter turns to rotate the frame clockwise
+  CallPeer(this.id);
 }
 
 Future<List<String>> localIps() async {
@@ -287,7 +287,12 @@ class Session extends ChangeNotifier {
     }
   }
 
-  Future<void> retryDownload(Msg m) => _download(m);
+  String _lastDlErr = '';
+
+  Future<void> retryDownload(Msg m) async {
+    await _download(m);
+    if (m.dl == dlFailed) onNotice?.call('ডাউনলোড হয়নি: $_lastDlErr');
+  }
 
   final _dling = <String>{};
 
@@ -295,6 +300,9 @@ class Session extends ChangeNotifier {
     if (!_dling.add(m.id)) return;
     try {
       await _download2(m);
+      if (m.dl == dlDone && (m.kind == 'image' || m.kind == 'video')) {
+        await saveToGallery(m, silent: true);
+      }
     } finally {
       _dling.remove(m.id);
     }
@@ -334,7 +342,8 @@ class Session extends ChangeNotifier {
       await sink.close();
       m.path = dest.path;
       m.dl = dlDone;
-    } catch (_) {
+    } catch (e) {
+      _lastDlErr = '$e';
       m.dl = dlFailed;
     } finally {
       c.close(force: true);
@@ -391,7 +400,11 @@ class Session extends ChangeNotifier {
   }
 
   void _handle(dynamic d) {
-    final m = jsonDecode(d as String) as Map;
+    if (d is! String) {
+      _onBinary(d as List<int>);
+      return;
+    }
+    final m = jsonDecode(d) as Map;
     switch (m['t']) {
       case 'peers':
         for (final p in (m['list'] as List)) {
@@ -440,13 +453,10 @@ class Session extends ChangeNotifier {
       case 'leave':
         _onLeave(m);
         break;
-      case 'rtc':
-        _onRtc(m);
-        break;
     }
   }
 
-  // ================= calls (mesh WebRTC over the hotspot LAN) =================
+  // ================= calls: audio + video travel through the hub (no WebRTC) =================
   bool inCall = false, iAmCaller = false, callVideo = false;
   bool muted = false, camOff = false, speaker = false;
   String? cid, callThread;
@@ -454,81 +464,180 @@ class Session extends ChangeNotifier {
   final invited = <String>{};
   final cps = <String, CallPeer>{};
   Map<String, dynamic>? incoming;
-  MediaStream? local;
-  final localR = RTCVideoRenderer();
-  bool _localInit = false;
+  CameraController? cam;
+  CameraDescription? _camDesc;
+  List<CameraDescription> _cams = [];
   DateTime? _t0;
   Timer? _ringTimer, _inTimer;
+  bool _busyCall = false, _convBusy = false;
+  int _lastFrameMs = 0;
 
   int get callSeconds => _t0 == null ? 0 : DateTime.now().difference(_t0!).inSeconds;
-  String _mmss(int s) =>
+  String mmss(int s) =>
       '${(s ~/ 60).toString().padLeft(2, '0')}:${(s % 60).toString().padLeft(2, '0')}';
-  String mmss(int s) => _mmss(s);
+  bool get _anyPresent => cps.values.any((c) => c.present);
+  CallPeer _cp(String id) => cps.putIfAbsent(id, () => CallPeer(id));
 
+  // ---- local devices
   Future<bool> _openMedia(bool video) async {
     try {
-      if (!_localInit) {
-        await localR.initialize();
-        _localInit = true;
+      final r = AudioRecorder();
+      final ok = await r.hasPermission();
+      await r.dispose();
+      if (!ok) {
+        onNotice?.call('মাইক্রোফোনের পারমিশন দিন');
+        return false;
       }
-      local = await navigator.mediaDevices.getUserMedia({
-        'audio': true,
-        'video': video ? {'facingMode': 'user'} : false,
-      });
-      localR.srcObject = local;
+      speaker = video;
       muted = false;
       camOff = false;
-      speaker = video;
-      try {
-        await Helper.setSpeakerphoneOn(speaker);
-      } catch (_) {}
+      final started = await Media.startAudio(speaker: speaker, onMic: _onMic);
+      if (!started) {
+        onNotice?.call('মাইক্রোফোন চালু করা যায়নি');
+        return false;
+      }
+      if (video) {
+        try {
+          await _startCamera(CameraLensDirection.front);
+        } catch (e) {
+          onNotice?.call('ক্যামেরা চালু করা যায়নি: $e');
+        }
+      }
       return true;
     } catch (e) {
-      onNotice?.call('ক্যামেরা/মাইক্রোফোন চালু করা যায়নি (পারমিশন দিন)');
+      onNotice?.call('কল শুরু করা যায়নি: $e');
       return false;
     }
   }
 
-  CallPeer _cp(String id) => cps.putIfAbsent(id, () => CallPeer(id));
+  Future<void> _startCamera(CameraLensDirection dir) async {
+    if (_cams.isEmpty) _cams = await availableCameras();
+    final d = _cams.firstWhere((c) => c.lensDirection == dir, orElse: () => _cams.first);
+    final c = CameraController(d, ResolutionPreset.low,
+        enableAudio: false, imageFormatGroup: ImageFormatGroup.yuv420);
+    await c.initialize();
+    _camDesc = d;
+    cam = c;
+    await c.startImageStream(_onCamFrame);
+    notifyListeners();
+  }
 
-  bool _busyCall = false;
-
-  Future<void> startCall(String thread, bool video) async {
-    if (_busyCall) return;
-    _busyCall = true;
-    try {
-      await _startCall(thread, video);
-    } finally {
-      _busyCall = false;
+  Future<void> _stopCamera() async {
+    final c = cam;
+    cam = null;
+    if (c != null) {
+      try {
+        if (c.value.isStreamingImages) await c.stopImageStream();
+      } catch (_) {}
+      try {
+        await c.dispose();
+      } catch (_) {}
     }
   }
 
-  Future<void> _startCall(String thread, bool video) async {
-    if (inCall || incoming != null) return;
-    final targets = callTargets(thread);
-    if (targets.isEmpty) {
-      onNotice?.call('কেউ অনলাইনে নেই');
-      return;
+  Future<void> _closeLocal() async {
+    await _stopCamera();
+    await Media.stopAudio();
+  }
+
+  void _onMic(Uint8List d) {
+    if (!inCall || muted || !_anyPresent) return;
+    _sendMedia(1, d);
+  }
+
+  Future<void> _onCamFrame(CameraImage img) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (_convBusy || now - _lastFrameMs < 100 || camOff || !inCall || !_anyPresent) return;
+    _convBusy = true;
+    _lastFrameMs = now;
+    try {
+      final jpg = await Media.jpeg(img);
+      final rot = img.width > img.height ? ((_camDesc?.sensorOrientation ?? 90) ~/ 90) % 4 : 0;
+      final b = BytesBuilder(copy: false)
+        ..addByte(rot)
+        ..addByte(0)
+        ..add(jpg);
+      _sendMedia(2, b.takeBytes());
+    } catch (_) {
+    } finally {
+      _convBusy = false;
     }
-    if (!await _openMedia(video)) return;
-    cid = Store.rid(8);
-    callVideo = video;
-    callThread = thread;
-    iAmCaller = true;
-    all = [myId, ...targets];
-    invited
-      ..clear()
-      ..addAll(targets);
-    inCall = true;
-    _t0 = null;
-    notifyListeners();
-    for (final t in targets) {
-      _send({'t': 'invite', 'to': t, 'cid': cid, 'video': video, 'all': all, 'thread': thread});
+  }
+
+  // ---- media over the hub: [type][n][n x 12-byte ids][payload]
+  // type 1 = audio (PCM16 16 kHz mono, 20 ms), 2 = video frame (JPEG), 3 = camera off
+  void _sendMedia(int type, Uint8List payload) {
+    final w = _ws;
+    if (w == null) return;
+    final ids = [for (final c in cps.values) if (c.present) c.id];
+    if (ids.isEmpty) return;
+    final b = BytesBuilder(copy: false);
+    b.addByte(type);
+    b.addByte(ids.length);
+    for (final id in ids) {
+      b.add(ascii.encode(id.padRight(12).substring(0, 12)));
     }
-    _ringTimer?.cancel();
-    _ringTimer = Timer(const Duration(seconds: 45), () {
-      if (inCall && !cps.values.any((c) => c.present)) hangup();
-    });
+    b.add(payload);
+    w.add(b.takeBytes());
+  }
+
+  void _onBinary(List<int> d) {
+    if (!inCall || d.length < 13) return;
+    final bytes = d is Uint8List ? d : Uint8List.fromList(d);
+    final type = bytes[0];
+    final from = ascii.decode(Uint8List.sublistView(bytes, 1, 13)).trim();
+    if (type == 1) {
+      Media.play(from, Uint8List.fromList(Uint8List.sublistView(bytes, 13)));
+    } else if (type == 2 && bytes.length > 15) {
+      final cp = cps[from];
+      if (cp == null) return;
+      cp.rot = bytes[13];
+      cp.frame = Uint8List.fromList(Uint8List.sublistView(bytes, 15));
+      _tick();
+    } else if (type == 3) {
+      final cp = cps[from];
+      if (cp != null) {
+        cp.frame = null;
+        notifyListeners();
+      }
+    }
+  }
+
+  // ---- call signalling
+  Future<void> startCall(String thread, bool video) async {
+    if (_busyCall || inCall || incoming != null) return;
+    _busyCall = true;
+    try {
+      final targets = callTargets(thread);
+      if (targets.isEmpty) {
+        onNotice?.call('কেউ অনলাইনে নেই');
+        return;
+      }
+      if (!await _openMedia(video)) {
+        await _closeLocal();
+        return;
+      }
+      cid = Store.rid(8);
+      callVideo = video;
+      callThread = thread;
+      iAmCaller = true;
+      all = [myId, ...targets];
+      invited
+        ..clear()
+        ..addAll(targets);
+      inCall = true;
+      _t0 = null;
+      notifyListeners();
+      for (final t in targets) {
+        _send({'t': 'invite', 'to': t, 'cid': cid, 'video': video, 'all': all, 'thread': thread});
+      }
+      _ringTimer?.cancel();
+      _ringTimer = Timer(const Duration(seconds: 45), () {
+        if (inCall && !_anyPresent) hangup();
+      });
+    } finally {
+      _busyCall = false;
+    }
   }
 
   String _threadOfInvite(Map m) {
@@ -554,47 +663,45 @@ class Session extends ChangeNotifier {
 
   Future<void> acceptCall() async {
     if (_busyCall) return;
+    final inc = incoming;
+    if (inc == null) return;
     _busyCall = true;
     try {
-      await _acceptCall();
+      _inTimer?.cancel();
+      final ok = await _openMedia(inc['video'] == true);
+      if (!ok) {
+        incoming = null;
+        declineAll(inc);
+        await _closeLocal();
+        notifyListeners();
+        return;
+      }
+      if (incoming == null || incoming!['cid'] != inc['cid']) {
+        await _closeLocal();
+        return;
+      }
+      incoming = null;
+      cid = inc['cid'];
+      callVideo = inc['video'] == true;
+      callThread = _threadOfInvite(inc);
+      iAmCaller = false;
+      all = List<String>.from(inc['all']);
+      invited
+        ..clear()
+        ..addAll(all.where((x) => x != myId));
+      inCall = true;
+      _t0 = null;
+      notifyListeners();
+      for (final id in all) {
+        if (id != myId) _send({'t': 'joined', 'to': id, 'cid': cid});
+      }
+      _ringTimer?.cancel();
+      _ringTimer = Timer(const Duration(seconds: 15), () {
+        if (inCall && !_anyPresent) hangup();
+      });
     } finally {
       _busyCall = false;
     }
-  }
-
-  Future<void> _acceptCall() async {
-    final inc = incoming;
-    if (inc == null) return;
-    _inTimer?.cancel();
-    if (!await _openMedia(inc['video'] == true)) {
-      incoming = null;
-      declineAll(inc);
-      notifyListeners();
-      return;
-    }
-    if (incoming == null || incoming!['cid'] != inc['cid']) {
-      await _closeLocal();
-      return;
-    }
-    incoming = null;
-    cid = inc['cid'];
-    callVideo = inc['video'] == true;
-    callThread = _threadOfInvite(inc);
-    iAmCaller = false;
-    all = List<String>.from(inc['all']);
-    invited
-      ..clear()
-      ..addAll(all.where((x) => x != myId));
-    inCall = true;
-    _t0 = null;
-    notifyListeners();
-    for (final id in all) {
-      if (id != myId) _send({'t': 'joined', 'to': id, 'cid': cid});
-    }
-    _ringTimer?.cancel();
-    _ringTimer = Timer(const Duration(seconds: 15), () {
-      if (inCall && !cps.values.any((c) => c.present)) hangup();
-    });
   }
 
   void declineAll(Map inc) {
@@ -623,103 +730,18 @@ class Session extends ChangeNotifier {
     }
     if (!inCall || m['cid'] != cid) return;
     invited.remove(from);
-    final cp = cps.remove(from);
-    if (cp != null) _disposePeer(cp);
+    cps.remove(from);
     notifyListeners();
-    if (!cps.values.any((c) => c.present)) hangup();
+    if (!_anyPresent) hangup();
   }
 
-  Future<void> _present(String id) async {
+  void _present(String id) {
     final cp = _cp(id);
     cp.present = true;
     invited.remove(id);
     _ringTimer?.cancel();
+    _t0 ??= DateTime.now();
     notifyListeners();
-    // exactly one side of every pair sends the offer: the smaller id
-    if (myId.compareTo(id) < 0 && !cp.offered) {
-      cp.offered = true;
-      final pc = await _pcFor(id);
-      final o = await pc.createOffer();
-      await pc.setLocalDescription(o);
-      _send({'t': 'rtc', 'to': id, 'cid': cid, 'k': 'offer', 'd': o.toMap()});
-    }
-  }
-
-  Future<RTCPeerConnection> _pcFor(String id) {
-    final cp = _cp(id);
-    return cp.pcf ??= _makePc(cp);
-  }
-
-  Future<RTCPeerConnection> _makePc(CallPeer cp) async {
-    final pc = await createPeerConnection({'iceServers': <Map>[]});
-    cp.pc = pc;
-    pc.onIceCandidate = (c) {
-      if (c.candidate != null) {
-        _send({'t': 'rtc', 'to': cp.id, 'cid': cid, 'k': 'cand', 'd': c.toMap()});
-      }
-    };
-    pc.onTrack = (e) async {
-      if (e.streams.isNotEmpty) {
-        await cp.ready;
-        cp.r.srcObject = e.streams.first;
-        notifyListeners();
-      }
-    };
-    pc.onConnectionState = (s) {
-      cp.connected = s == RTCPeerConnectionState.RTCPeerConnectionStateConnected;
-      if (cp.connected) _t0 ??= DateTime.now();
-      notifyListeners();
-    };
-    for (final t in local!.getTracks()) {
-      await pc.addTrack(t, local!);
-    }
-    return pc;
-  }
-
-  Future<void> _onRtc(Map m) async {
-    if (!inCall || m['cid'] != cid) return;
-    final from = m['from'] as String;
-    final cp = _cp(from);
-    final pc = await _pcFor(from);
-    final d = m['d'];
-    switch (m['k']) {
-      case 'offer':
-        cp.present = true;
-        await pc.setRemoteDescription(RTCSessionDescription(d['sdp'], d['type']));
-        cp.remoteSet = true;
-        await _flushCands(cp);
-        final a = await pc.createAnswer();
-        await pc.setLocalDescription(a);
-        _send({'t': 'rtc', 'to': from, 'cid': cid, 'k': 'answer', 'd': a.toMap()});
-        notifyListeners();
-        break;
-      case 'answer':
-        await pc.setRemoteDescription(RTCSessionDescription(d['sdp'], d['type']));
-        cp.remoteSet = true;
-        await _flushCands(cp);
-        break;
-      case 'cand':
-        final c = RTCIceCandidate(d['candidate'], d['sdpMid'], d['sdpMLineIndex']);
-        if (cp.remoteSet) {
-          await pc.addCandidate(c);
-        } else {
-          cp.pending.add(c);
-        }
-        break;
-    }
-  }
-
-  Future<void> _flushCands(CallPeer cp) async {
-    for (final c in cp.pending) {
-      await cp.pc?.addCandidate(c);
-    }
-    cp.pending.clear();
-  }
-
-  void _disposePeer(CallPeer cp) {
-    cp.pc?.close();
-    cp.r.srcObject = null;
-    Future.delayed(const Duration(milliseconds: 400), () => cp.r.dispose());
   }
 
   void hangup() {
@@ -729,42 +751,22 @@ class Session extends ChangeNotifier {
     _endCall();
   }
 
-  Future<void> _closeLocal() async {
-    final l = local;
-    local = null;
-    localR.srcObject = null;
-    for (final t in l?.getTracks() ?? <MediaStreamTrack>[]) {
-      await t.stop();
-    }
-    await l?.dispose();
-  }
-
   Future<void> _endCall() async {
     if (!inCall) return;
     _ringTimer?.cancel();
     final secs = _t0 == null ? null : callSeconds;
     final th = callThread ?? 'all';
     final caller = iAmCaller;
-    final old = cps.values.toList();
     cps.clear();
     inCall = false;
     cid = null;
     all = [];
     invited.clear();
     _t0 = null;
-    final l = local;
-    local = null;
-    localR.srcObject = null;
     notifyListeners();
-    for (final t in l?.getTracks() ?? <MediaStreamTrack>[]) {
-      await t.stop();
-    }
-    await l?.dispose();
-    for (final cp in old) {
-      _disposePeer(cp);
-    }
+    await _closeLocal();
     if (secs != null) {
-      _sysLocal(th, 'কল শেষ • ${_mmss(secs)}');
+      _sysLocal(th, 'কল শেষ • ${mmss(secs)}');
     } else if (caller) {
       _sysLocal(th, 'অনুত্তরিত কল');
     }
@@ -772,29 +774,60 @@ class Session extends ChangeNotifier {
 
   void toggleMute() {
     muted = !muted;
-    for (final t in local?.getAudioTracks() ?? <MediaStreamTrack>[]) {
-      t.enabled = !muted;
-    }
     notifyListeners();
   }
 
   void toggleCam() {
+    if (cam == null) return;
     camOff = !camOff;
-    for (final t in local?.getVideoTracks() ?? <MediaStreamTrack>[]) {
-      t.enabled = !camOff;
-    }
+    if (camOff) _sendMedia(3, Uint8List(1));
     notifyListeners();
   }
 
   Future<void> switchCam() async {
-    final v = local?.getVideoTracks();
-    if (v != null && v.isNotEmpty) await Helper.switchCamera(v.first);
+    final c = cam;
+    if (c == null) return;
+    final dir = c.description.lensDirection == CameraLensDirection.front
+        ? CameraLensDirection.back
+        : CameraLensDirection.front;
+    await _stopCamera();
+    try {
+      await _startCamera(dir);
+    } catch (e) {
+      onNotice?.call('ক্যামেরা বদলানো যায়নি');
+    }
   }
 
   void toggleSpeaker() {
     speaker = !speaker;
-    Helper.setSpeakerphoneOn(speaker);
+    Media.setSpeaker(speaker);
     notifyListeners();
+  }
+
+  // ================= saving received files =================
+  Future<void> saveToGallery(Msg m, {bool silent = false}) async {
+    try {
+      if (m.path == null) return;
+      if (m.kind == 'video') {
+        await Gal.putVideo(m.path!);
+      } else {
+        await Gal.putImage(m.path!);
+      }
+      if (!silent) onNotice?.call('গ্যালারিতে সেভ হয়েছে');
+    } catch (e) {
+      if (!silent) onNotice?.call('সেভ করা যায়নি: $e');
+    }
+  }
+
+  Future<void> saveToDownloads(Msg m) async {
+    try {
+      final dir = Directory('/storage/emulated/0/Download/HotspotLink');
+      dir.createSync(recursive: true);
+      await File(m.path!).copy('${dir.path}/${m.name}');
+      onNotice?.call('সেভ হয়েছে: Download/HotspotLink');
+    } catch (e) {
+      onNotice?.call('সেভ করা যায়নি: $e');
+    }
   }
 }
 

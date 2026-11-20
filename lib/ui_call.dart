@@ -1,7 +1,7 @@
 import 'dart:async';
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'session.dart';
 
 class CallPage extends StatefulWidget {
@@ -27,6 +27,30 @@ class _CallPageState extends State<CallPage> {
     super.dispose();
   }
 
+  Widget _avatar(String id) => Center(
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const CircleAvatar(radius: 44, child: Icon(Icons.person, size: 44)),
+          const SizedBox(height: 8),
+          Text(app.nameOf(id), style: const TextStyle(color: Colors.white, fontSize: 18)),
+        ]),
+      );
+
+  Widget _remote(CallPeer p) {
+    final f = p.frame;
+    if (f == null) return _avatar(p.id);
+    return Stack(fit: StackFit.expand, children: [
+      ClipRect(
+          child: RotatedBox(
+              quarterTurns: p.rot,
+              child: Image.memory(f, gaplessPlayback: true, fit: BoxFit.cover))),
+      Positioned(
+          left: 8,
+          bottom: 8,
+          child: Text(app.nameOf(p.id),
+              style: const TextStyle(color: Colors.white, shadows: [Shadow(blurRadius: 4)]))),
+    ]);
+  }
+
   Widget _body() {
     final peers = app.cps.values.where((c) => c.present).toList();
     if (peers.isEmpty) {
@@ -35,29 +59,12 @@ class _CallPageState extends State<CallPage> {
               style: const TextStyle(color: Colors.white, fontSize: 20)));
     }
     if (app.callVideo) {
-      return GridView.count(
-        crossAxisCount: peers.length == 1 ? 1 : 2,
-        children: [
-          for (final p in peers)
-            Stack(fit: StackFit.expand, children: [
-              RTCVideoView(p.r, objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover),
-              Positioned(
-                  left: 8,
-                  bottom: 8,
-                  child: Text(app.nameOf(p.id),
-                      style: const TextStyle(color: Colors.white, shadows: [Shadow(blurRadius: 4)]))),
-            ]),
-        ],
-      );
+      if (peers.length == 1) return SizedBox.expand(child: _remote(peers.first));
+      return GridView.count(crossAxisCount: 2, children: [for (final p in peers) _remote(p)]);
     }
     return Center(
       child: Wrap(spacing: 24, runSpacing: 24, alignment: WrapAlignment.center, children: [
-        for (final p in peers)
-          Column(mainAxisSize: MainAxisSize.min, children: [
-            const CircleAvatar(radius: 48, child: Icon(Icons.person, size: 48)),
-            const SizedBox(height: 8),
-            Text(app.nameOf(p.id), style: const TextStyle(color: Colors.white, fontSize: 18)),
-          ]),
+        for (final p in peers) _avatar(p.id),
       ]),
     );
   }
@@ -65,6 +72,8 @@ class _CallPageState extends State<CallPage> {
   @override
   Widget build(BuildContext context) {
     final title = app.callThread == null ? '' : app.titleOf(app.callThread!);
+    final c = app.cam;
+    final showPreview = app.callVideo && !app.camOff && c != null && c.value.isInitialized;
     return PopScope(
       canPop: false, // Back must not close the chat underneath the call
       child: Scaffold(
@@ -79,7 +88,7 @@ class _CallPageState extends State<CallPage> {
               Text(app.mmss(app.callSeconds), style: const TextStyle(color: Colors.white70)),
             ]),
           ),
-          if (app.callVideo && !app.camOff)
+          if (showPreview)
             Positioned(
                 top: 48,
                 right: 12,
@@ -87,9 +96,7 @@ class _CallPageState extends State<CallPage> {
                 height: 140,
                 child: ClipRRect(
                     borderRadius: BorderRadius.circular(8),
-                    child: RTCVideoView(app.localR,
-                        mirror: true,
-                        objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover))),
+                    child: ColoredBox(color: Colors.black54, child: Center(child: CameraPreview(c!))))),
           Positioned(
             bottom: 40,
             left: 0,

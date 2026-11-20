@@ -18,6 +18,8 @@ jobs:
         run: flutter create --platforms=android --project-name hotspotlink --org com.example.hotspotlink .
       - name: Patch manifest
         run: python3 tools/patch_manifest.py
+      - name: Install native audio module
+        run: python3 tools/install_native.py
       - name: Gradle compileSdk override
         run: |
           mkdir -p ~/.gradle/init.d

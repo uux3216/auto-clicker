@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'session.dart';
 import 'ui_call.dart';
 import 'ui_home.dart';
@@ -9,6 +10,7 @@ final messengerKey = GlobalKey<ScaffoldMessengerState>();
 void main() {
   runZonedGuarded(() {
     WidgetsFlutterBinding.ensureInitialized();
+    SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
     FlutterError.onError = (d) => FlutterError.presentError(d);
     // In release mode a broken widget would be an invisible grey/black box.
     // Show the real error text instead so problems can be diagnosed.
