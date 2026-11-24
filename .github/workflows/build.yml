@@ -1,28 +1,23 @@
 name: Build APK
-
 on:
   push:
   workflow_dispatch:
-
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
-
-      - uses: gradle/actions/setup-gradle@v4
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
         with:
-          gradle-version: 8.9
-
-      - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
-
+          channel: stable
+      - run: flutter create --platforms=android --project-name hex_editor .
+      - run: flutter pub get
+      - run: flutter build apk --release
       - uses: actions/upload-artifact@v4
         with:
-          name: spiflash-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: hex-editor-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
