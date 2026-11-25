@@ -48,6 +48,10 @@ class _HexPageState extends State<HexPage> {
   final scroll = ScrollController();
   final hexCtl = TextEditingController();
   final ascCtl = TextEditingController();
+  final searchCtl = TextEditingController();
+  bool searchHex = false;
+  String lastQuery = '';
+  bool lastHex = false;
 
   void msg(String s) => ScaffoldMessenger.of(context)
     ..hideCurrentSnackBar()
@@ -185,67 +189,45 @@ class _HexPageState extends State<HexPage> {
   }
 
   // ---------- search ----------
-  Future<void> findDialog() async {
-    final ctl = TextEditingController();
-    bool hex = true;
-    await showDialog(
-        context: context,
-        builder: (c) => StatefulBuilder(
-            builder: (c, ss) => AlertDialog(
-                  title: const Text('Search'),
-                  content: Column(mainAxisSize: MainAxisSize.min, children: [
-                    SegmentedButton<bool>(
-                        segments: const [
-                          ButtonSegment(value: true, label: Text('Hex')),
-                          ButtonSegment(value: false, label: Text('Text')),
-                        ],
-                        selected: {hex},
-                        onSelectionChanged: (s) => ss(() => hex = s.first)),
-                    TextField(
-                        controller: ctl,
-                        autofocus: true,
-                        decoration: InputDecoration(
-                            hintText: hex ? '48 65 6C 6C 6F' : 'Hello')),
-                  ]),
-                  actions: [
-                    TextButton(
-                        onPressed: () => Navigator.pop(c),
-                        child: const Text('Cancel')),
-                    FilledButton(
-                        onPressed: () {
-                          Navigator.pop(c);
-                          if (hex) {
-                            final s = ctl.text.replaceAll(RegExp(r'\s'), '');
-                            if (s.isEmpty || s.length.isOdd) {
-                              msg('Hex needs an even number of digits');
-                              return;
-                            }
-                            final p = <int>[];
-                            for (var i = 0; i < s.length; i += 2) {
-                              final v = int.tryParse(s.substring(i, i + 2),
-                                  radix: 16);
-                              if (v == null) {
-                                msg('Invalid hex');
-                                return;
-                              }
-                              p.add(v);
-                            }
-                            pattern = p;
-                          } else {
-                            if (ctl.text.isEmpty) return;
-                            pattern = utf8.encode(ctl.text);
-                          }
-                          findNext();
-                        },
-                        child: const Text('Find')),
-                  ],
-                )));
+  bool buildPattern(String text, bool hex) {
+    if (hex) {
+      final t = text.replaceAll(RegExp(r'\s'), '');
+      if (t.isEmpty || t.length.isOdd) {
+        msg('Hex needs an even number of digits (e.g. 48 65 6C)');
+        return false;
+      }
+      final p = <int>[];
+      for (var i = 0; i < t.length; i += 2) {
+        final v = int.tryParse(t.substring(i, i + 2), radix: 16);
+        if (v == null) {
+          msg('Invalid hex');
+          return false;
+        }
+        p.add(v);
+      }
+      pattern = p;
+    } else {
+      if (text.isEmpty) return false;
+      pattern = utf8.encode(text);
+    }
+    return true;
   }
 
-  void findNext() {
+  void searchFromBar() {
+    FocusScope.of(context).unfocus();
+    if (data.isEmpty) return;
+    final q = searchCtl.text;
+    final changed = q != lastQuery || searchHex != lastHex;
+    if (!buildPattern(q, searchHex)) return;
+    lastQuery = q;
+    lastHex = searchHex;
+    findNext(fromStart: changed);
+  }
+
+  void findNext({bool fromStart = false}) {
     if (pattern.isEmpty || data.isEmpty) return;
     final n = data.length, m = pattern.length;
-    final start = (sel ?? -1) + 1;
+    final start = fromStart ? 0 : (sel ?? -1) + 1;
     for (var k = 0; k < n; k++) {
       final i = (start + k) % n;
       if (i + m > n) continue;
@@ -263,9 +245,11 @@ class _HexPageState extends State<HexPage> {
           hitLen = m;
         });
         jumpTo(i);
+        msg('Found at offset 0x${i.toRadixString(16)} ($i)');
         return;
       }
     }
+    setState(() => hitStart = -1);
     msg('Not found');
   }
 
@@ -371,6 +355,31 @@ class _HexPageState extends State<HexPage> {
         child: Row(children: w));
   }
 
+  Widget searchBar() => Material(
+        elevation: 4,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+          child: Row(children: [
+            OutlinedButton(
+                onPressed: () => setState(() => searchHex = !searchHex),
+                child: Text(searchHex ? 'HEX' : 'TXT')),
+            const SizedBox(width: 8),
+            Expanded(
+                child: TextField(
+                    controller: searchCtl,
+                    textInputAction: TextInputAction.search,
+                    onSubmitted: (_) => searchFromBar(),
+                    decoration: InputDecoration(
+                        hintText: searchHex ? '48 65 6C 6C 6F' : 'Search text',
+                        isDense: true,
+                        border: const OutlineInputBorder()))),
+            const SizedBox(width: 8),
+            FilledButton(
+                onPressed: searchFromBar, child: const Text('Find next')),
+          ]),
+        ),
+      );
+
   Widget editorBar() => Material(
         elevation: 8,
         child: SafeArea(
@@ -436,13 +445,11 @@ class _HexPageState extends State<HexPage> {
           IconButton(onPressed: saveFile, icon: const Icon(Icons.save)),
           PopupMenuButton<String>(
             onSelected: (v) {
-              if (v == 'find') findDialog();
               if (v == 'next') findNext();
               if (v == 'goto') gotoDialog();
               if (v == 'sum') checksumDialog();
             },
             itemBuilder: (c) => const [
-              PopupMenuItem(value: 'find', child: Text('Search')),
               PopupMenuItem(value: 'next', child: Text('Find next')),
               PopupMenuItem(value: 'goto', child: Text('Go to offset')),
               PopupMenuItem(value: 'sum', child: Text('Checksums')),
@@ -458,11 +465,18 @@ class _HexPageState extends State<HexPage> {
                   label: const Text('Open file')))
           : Column(children: [
               Expanded(
-                  child: ListView.builder(
+                  child: Scrollbar(
                       controller: scroll,
-                      itemExtent: rowH,
-                      itemCount: rows,
-                      itemBuilder: (c, r) => row(r))),
+                      thumbVisibility: true,
+                      interactive: true,
+                      thickness: 12,
+                      radius: const Radius.circular(6),
+                      child: ListView.builder(
+                          controller: scroll,
+                          itemExtent: rowH,
+                          itemCount: rows,
+                          itemBuilder: (c, r) => row(r)))),
+              searchBar(),
               if (sel != null) editorBar(),
             ]),
     );
